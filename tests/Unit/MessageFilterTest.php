@@ -82,4 +82,24 @@ final class MessageFilterTest extends TestCase
             'to' => [['name' => 'Other', 'email' => 'other@allowed.com']],
         ])));
     }
+
+    public function test_skip_auto_generated_is_on_by_default(): void
+    {
+        $f = new MessageFilter([]); // no config at all
+        $this->assertFalse($f->passes($this->msg(['headers' => ['precedence' => 'bulk']])));
+    }
+
+    public function test_recipient_include_with_no_recipients_is_rejected(): void
+    {
+        $f = new MessageFilter(['recipients' => ['include' => ['support@us.com']]]);
+        // a message with empty to + cc
+        $this->assertFalse($f->passes($this->msg([])));
+    }
+
+    public function test_only_unseen(): void
+    {
+        $f = new MessageFilter(['only_unseen' => true]);
+        $this->assertFalse($f->passes($this->msg(['flags' => ['\\Seen']])));
+        $this->assertTrue($f->passes($this->msg(['flags' => []])));
+    }
 }
