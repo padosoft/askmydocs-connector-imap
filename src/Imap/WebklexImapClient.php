@@ -16,6 +16,9 @@ final class WebklexImapClient implements ImapClientInterface
 {
     private bool $connected = false;
 
+    /** @var array<string,int> */
+    private array $uidValidityCache = [];
+
     public function __construct(private Client $client) {}
 
     private function ensure(): void
@@ -52,6 +55,8 @@ final class WebklexImapClient implements ImapClientInterface
         $status = $folder->status();
         $uidValidity = (int) ($status['uidvalidity'] ?? 0);
         $lastUid = max(0, ((int) ($status['uidnext'] ?? 1)) - 1);
+
+        $this->uidValidityCache[$name] = $uidValidity;
 
         return new MailboxState($uidValidity, $lastUid);
     }
@@ -123,9 +128,7 @@ final class WebklexImapClient implements ImapClientInterface
             }
         }
 
-        // Use status() (non-deprecated) to get uidvalidity; returns array from EXAMINE
-        $status = $folder->status();
-        $uidValidity = (int) ($status['uidvalidity'] ?? 0);
+        $uidValidity = $this->uidValidityFor($mailbox);
 
         // getFlags() returns FlagCollection; ->all() returns underlying collection data
         $flagCollection = $message->getFlags();
@@ -211,7 +214,28 @@ final class WebklexImapClient implements ImapClientInterface
             return [];
         }
 
-        return array_values(array_filter(preg_split('/\s+/', $refs) ?: []));
+        return array_values(array_filter(preg_split('/[\s,]+/', $refs) ?: []));
+    }
+
+    /**
+     * Returns the cached uidvalidity for the given mailbox, fetching it via STATUS only when
+     * the cache is cold (i.e. fetchMessage() was called without a preceding selectMailbox()).
+     */
+    private function uidValidityFor(string $mailbox): int
+    {
+        if (isset($this->uidValidityCache[$mailbox])) {
+            return $this->uidValidityCache[$mailbox];
+        }
+
+        $folder = $this->client->getFolder($mailbox);
+        if ($folder === null) {
+            return 0;
+        }
+
+        $uidValidity = (int) ($folder->status()['uidvalidity'] ?? 0);
+        $this->uidValidityCache[$mailbox] = $uidValidity;
+
+        return $uidValidity;
     }
 
     private function attributeStringOrNull(mixed $attribute): ?string
