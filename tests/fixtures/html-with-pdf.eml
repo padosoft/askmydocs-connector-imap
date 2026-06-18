@@ -1,0 +1,20 @@
+From: Anna Bianchi <anna@acme.com>
+To: support@us.com
+Cc: boss@us.com
+Subject: Fattura allegata
+Date: Tue, 16 Jun 2026 09:00:00 +0200
+Message-ID: <html-1@acme.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="b1"
+
+--b1
+Content-Type: text/html; charset=UTF-8
+
+<p>In allegato la <b>fattura</b>.</p>
+--b1
+Content-Type: application/pdf; name="fattura.pdf"
+Content-Disposition: attachment; filename="fattura.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQKJ-Rndo==
+--b1--
