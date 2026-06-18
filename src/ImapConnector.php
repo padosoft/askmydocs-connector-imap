@@ -6,15 +6,25 @@ namespace Padosoft\AskMyDocsConnectorImap;
 
 use Carbon\Carbon;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Padosoft\AskMyDocsConnectorBase\Auth\OAuthCredentialVault;
 use Padosoft\AskMyDocsConnectorBase\BaseConnector;
 use Padosoft\AskMyDocsConnectorBase\Contracts\ConnectorIngestionContract;
 use Padosoft\AskMyDocsConnectorBase\Exceptions\ConnectorAuthException;
+use Padosoft\AskMyDocsConnectorBase\Exceptions\ConnectorPaginationLimitException;
 use Padosoft\AskMyDocsConnectorBase\HealthStatus;
+use Padosoft\AskMyDocsConnectorBase\Models\ConnectorInstallation;
 use Padosoft\AskMyDocsConnectorBase\Support\TenantContext;
 use Padosoft\AskMyDocsConnectorBase\SyncResult;
+use Padosoft\AskMyDocsConnectorImap\Imap\AttachmentPolicy;
+use Padosoft\AskMyDocsConnectorImap\Imap\EmailToMarkdown;
 use Padosoft\AskMyDocsConnectorImap\Imap\ImapClientFactoryInterface;
 use Padosoft\AskMyDocsConnectorImap\Imap\ImapClientInterface;
+use Padosoft\AskMyDocsConnectorImap\Imap\ImapMessage;
+use Padosoft\AskMyDocsConnectorImap\Imap\MailboxWalker;
+use Padosoft\AskMyDocsConnectorImap\Imap\MessageFilter;
+use Padosoft\AskMyDocsConnectorImap\Support\MailMetadata;
 
 class ImapConnector extends BaseConnector
 {
@@ -120,14 +130,165 @@ class ImapConnector extends BaseConnector
 
     public function syncFull(int $installationId): SyncResult
     {
-        // Implemented in Task 11.
-        return SyncResult::empty();
+        return $this->runSync($installationId, null, true);
     }
 
     public function syncIncremental(int $installationId, ?Carbon $since): SyncResult
     {
-        // Implemented in Task 11.
-        return SyncResult::empty();
+        if ($since === null) {
+            return $this->syncFull($installationId);
+        }
+
+        return $this->runSync($installationId, $since, false);
+    }
+
+    private function runSync(int $installationId, ?Carbon $since, bool $full): SyncResult
+    {
+        $installation = $this->loadInstallation($installationId);
+        $config = $this->resolveConfig((array) ($installation->config_json ?? []));
+        $projectKey = (string) ($config['project_key'] ?? ('connector-'.$this->key()));
+
+        $client = $this->makeClient($installationId);
+        $walker = new MailboxWalker($client, $config);
+        $filter = new MessageFilter($config);
+        $attachmentPolicy = new AttachmentPolicy((array) ($config['attachments'] ?? []));
+        $preferText = (string) ($config['body_format'] ?? 'prefer_text') === 'prefer_text';
+        $stripQuoted = (bool) ($config['strip_quoted_history'] ?? false);
+        $maxMessages = (int) ($config['limits']['max_messages_per_sync'] ?? 5000);
+
+        $state = (array) ($this->vault->getExtra($installationId)['mailboxes_state'] ?? []);
+        $added = 0;
+        $errors = [];
+        $processed = 0;
+
+        try {
+            foreach ($walker->selectedMailboxes() as $mailbox) {
+                $mailboxState = $full ? [] : (array) ($state[$mailbox] ?? []);
+                $window = $walker->windowSince();
+                $effectiveSince = $since !== null && $window !== null ? $since->max($window) : ($since ?? $window);
+                $r = $walker->incrementalUids($mailbox, $mailboxState, $effectiveSince);
+                $maxUid = (int) ($mailboxState['last_uid'] ?? 0);
+
+                foreach ($r['uids'] as $uid) {
+                    if ($processed >= $maxMessages) {
+                        throw new ConnectorPaginationLimitException(maxPages: $maxMessages);
+                    }
+                    $processed++;
+                    try {
+                        $message = $client->fetchMessage($mailbox, $uid);
+                        if (! $filter->passes($message)) {
+                            $maxUid = max($maxUid, $uid);
+
+                            continue;
+                        }
+                        $added += $this->ingestMessage($installation, $projectKey, $config, $message, $attachmentPolicy, $preferText, $stripQuoted);
+                        $maxUid = max($maxUid, $uid);
+                    } catch (\Throwable $e) {
+                        $errors[] = sprintf('%s uid %d: %s', $mailbox, $uid, $e->getMessage());
+                    }
+                }
+
+                $state[$mailbox] = ['uidvalidity' => $r['uidValidity'], 'last_uid' => $maxUid];
+            }
+        } catch (ConnectorPaginationLimitException) {
+            $errors[] = sprintf('sync truncated at max_messages_per_sync=%d', $maxMessages);
+        } finally {
+            $client->close();
+        }
+
+        $this->vault->setExtraKey($installationId, 'mailboxes_state', $state);
+
+        return new SyncResult(
+            documentsAdded: $full ? $added : 0,
+            documentsUpdated: $full ? 0 : $added,
+            documentsRemoved: 0,
+            errors: $errors,
+            completedAt: Carbon::now(),
+        );
+    }
+
+    /** @param array<string,mixed> $config */
+    private function ingestMessage(
+        ConnectorInstallation $installation,
+        string $projectKey,
+        array $config,
+        ImapMessage $message,
+        AttachmentPolicy $policy,
+        bool $preferText,
+        bool $stripQuoted,
+    ): int {
+        $count = 0;
+        $mailboxSlug = Str::slug($message->mailbox) ?: 'folder';
+
+        $markdown = (new EmailToMarkdown)->render($message, $preferText, $stripQuoted);
+        if (($config['redact_pii'] ?? false) === true) {
+            $markdown = $this->maybeRedactContent($markdown);
+        }
+
+        $relative = sprintf('%s/connectors/imap/installation-%d/%s/%d.md', $projectKey, $installation->id, $mailboxSlug, $message->uid);
+        $paths = $this->resolveKbSourcePath($relative);
+        Storage::disk($paths['disk'])->put($paths['absolute'], $markdown);
+
+        $this->dispatchIngestion(
+            projectKey: $projectKey,
+            relativePath: $paths['relative'],
+            disk: $paths['disk'],
+            title: $message->subject !== '' ? $message->subject : '(no subject)',
+            metadata: (new MailMetadata)->build($installation->id, $message),
+            mimeType: 'text/markdown',
+            tenantId: $installation->tenant_id,
+        );
+        $count++;
+
+        $emitted = 0;
+        foreach ($message->attachments as $attachment) {
+            if ($emitted >= $policy->limit()) {
+                break;
+            }
+            if (! $policy->accepts($attachment)) {
+                continue;
+            }
+            $emitted++;
+            $safe = Str::slug(pathinfo($attachment->filename, PATHINFO_FILENAME)) ?: 'file';
+            $ext = pathinfo($attachment->filename, PATHINFO_EXTENSION);
+            $attRelative = sprintf('%s/connectors/imap/installation-%d/%s/%d/%s.%s', $projectKey, $installation->id, $mailboxSlug, $message->uid, $safe, $ext);
+            $attPaths = $this->resolveKbSourcePath($attRelative);
+            Storage::disk($attPaths['disk'])->put($attPaths['absolute'], $attachment->contents);
+
+            $meta = (new MailMetadata)->build($installation->id, $message);
+            $meta['attachment_of_message_id'] = $message->messageId;
+            $meta['attachment_filename'] = $attachment->filename;
+
+            $this->dispatchIngestion(
+                projectKey: $projectKey,
+                relativePath: $attPaths['relative'],
+                disk: $attPaths['disk'],
+                title: $attachment->filename,
+                metadata: $meta,
+                mimeType: $attachment->mimeType !== '' ? $attachment->mimeType : 'application/octet-stream',
+                tenantId: $installation->tenant_id,
+            );
+            $count++;
+        }
+
+        return $count;
+    }
+
+    /**
+     * @param  array<string,mixed>  $config
+     * @return array<string,mixed>
+     */
+    private function resolveConfig(array $config): array
+    {
+        $defaults = (array) config('connectors.providers.imap.defaults', []);
+        $config['attachments'] = array_merge((array) ($defaults['attachments'] ?? []), (array) ($config['attachments'] ?? []));
+        $config['limits'] = array_merge((array) ($defaults['limits'] ?? []), (array) ($config['limits'] ?? []));
+        $config['date_window_days'] ??= $defaults['date_window_days'] ?? 365;
+        $config['skip_auto_generated'] ??= $defaults['skip_auto_generated'] ?? true;
+        $config['body_format'] ??= $defaults['body_format'] ?? 'prefer_text';
+        $config['folders']['exclude'] = $config['folders']['exclude'] ?? ($defaults['folders_exclude'] ?? []);
+
+        return $config;
     }
 
     protected function authMode(int $installationId): string
