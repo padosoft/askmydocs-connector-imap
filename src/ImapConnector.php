@@ -6,15 +6,27 @@ namespace Padosoft\AskMyDocsConnectorImap;
 
 use Carbon\Carbon;
 use Illuminate\Http\Request;
+use Padosoft\AskMyDocsConnectorBase\Auth\OAuthCredentialVault;
 use Padosoft\AskMyDocsConnectorBase\BaseConnector;
+use Padosoft\AskMyDocsConnectorBase\Contracts\ConnectorIngestionContract;
 use Padosoft\AskMyDocsConnectorBase\Exceptions\ConnectorAuthException;
 use Padosoft\AskMyDocsConnectorBase\HealthStatus;
+use Padosoft\AskMyDocsConnectorBase\Support\TenantContext;
 use Padosoft\AskMyDocsConnectorBase\SyncResult;
 use Padosoft\AskMyDocsConnectorImap\Imap\ImapClientFactoryInterface;
 use Padosoft\AskMyDocsConnectorImap\Imap\ImapClientInterface;
 
 class ImapConnector extends BaseConnector
 {
+    public function __construct(
+        OAuthCredentialVault $vault,
+        TenantContext $tenantContext,
+        ConnectorIngestionContract $ingestion,
+        private readonly ImapClientFactoryInterface $factory,
+    ) {
+        parent::__construct($vault, $tenantContext, $ingestion);
+    }
+
     public function key(): string
     {
         return 'imap';
@@ -94,14 +106,15 @@ class ImapConnector extends BaseConnector
 
     public function health(int $installationId): HealthStatus
     {
+        $client = $this->makeClient($installationId);
         try {
-            $client = $this->makeClient($installationId);
             $ok = $client->ping();
-            $client->close();
 
             return $ok ? HealthStatus::healthy() : HealthStatus::errored('IMAP ping failed');
         } catch (\Throwable $e) {
             return HealthStatus::errored($e->getMessage());
+        } finally {
+            $client->close();
         }
     }
 
@@ -136,10 +149,7 @@ class ImapConnector extends BaseConnector
         $config = (array) ($this->loadInstallation($installationId)->config_json ?? []);
         $connection = (array) ($config['connection'] ?? []);
 
-        /** @var ImapClientFactoryInterface $factory */
-        $factory = app(ImapClientFactoryInterface::class);
-
-        return $factory->make($connection, $secret, (string) ($config['auth_mode'] ?? 'basic'));
+        return $this->factory->make($connection, $secret, (string) ($config['auth_mode'] ?? 'basic'));
     }
 
     private function xoauthAuthorizeUrl(int $installationId, string $state): string
@@ -152,6 +162,7 @@ class ImapConnector extends BaseConnector
             'client_id' => $p['client_id'] ?? '',
             'redirect_uri' => $p['redirect_uri'] ?? '',
             'response_type' => 'code',
+            // TODO(Task 13): move xoauth2 scopes to config when the full token-exchange path lands.
             'scope' => $provider === 'google' ? 'https://mail.google.com/' : 'https://outlook.office.com/IMAP.AccessAsUser.All offline_access',
             'access_type' => 'offline',
             'state' => $state,
