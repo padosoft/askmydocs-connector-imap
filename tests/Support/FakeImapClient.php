@@ -20,7 +20,7 @@ final class FakeImapClient implements ImapClientInterface
 
     public function listMailboxes(): array
     {
-        return array_keys($this->byMailbox);
+        return array_values(array_keys($this->byMailbox));
     }
 
     public function selectMailbox(string $name): MailboxState

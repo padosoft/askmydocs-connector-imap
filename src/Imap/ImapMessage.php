@@ -6,17 +6,6 @@ namespace Padosoft\AskMyDocsConnectorImap\Imap;
 
 use Carbon\Carbon;
 
-final class ImapAttachment
-{
-    public function __construct(
-        public readonly string $filename,
-        public readonly string $mimeType,
-        public readonly int $sizeBytes,
-        public readonly bool $isInline,
-        public readonly string $contents,
-    ) {}
-}
-
 final class ImapMessage
 {
     /**
@@ -53,29 +42,4 @@ final class ImapMessage
     {
         return $this->attachments !== [];
     }
-}
-
-final class MailboxState
-{
-    public function __construct(
-        public readonly int $uidValidity,
-        public readonly int $lastUid,
-    ) {}
-}
-
-interface ImapClientInterface
-{
-    /** @return list<string> */
-    public function listMailboxes(): array;
-
-    public function selectMailbox(string $name): MailboxState;
-
-    /** @return list<int> ascending UIDs matching the window */
-    public function searchUids(string $mailbox, ?Carbon $since, ?int $sinceUid): array;
-
-    public function fetchMessage(string $mailbox, int $uid): ImapMessage;
-
-    public function ping(): bool;
-
-    public function close(): void;
 }

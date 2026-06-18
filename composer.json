@@ -20,8 +20,7 @@
         "laravel/pint": "^1.18"
     },
     "autoload": {
-        "psr-4": { "Padosoft\\AskMyDocsConnectorImap\\": "src/" },
-        "classmap": ["src/Imap/Contracts.php"]
+        "psr-4": { "Padosoft\\AskMyDocsConnectorImap\\": "src/" }
     },
     "autoload-dev": {
         "psr-4": { "Padosoft\\AskMyDocsConnectorImap\\Tests\\": "tests/" }
