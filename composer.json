@@ -1,0 +1,44 @@
+{
+    "name": "padosoft/askmydocs-connector-imap",
+    "description": "IMAP email connector for AskMyDocs — ingest mailboxes (body, headers, attachments) as RAG knowledge.",
+    "type": "library",
+    "license": "Apache-2.0",
+    "require": {
+        "php": "^8.3",
+        "illuminate/support": "^12.0|^13.0",
+        "illuminate/http": "^12.0|^13.0",
+        "illuminate/contracts": "^12.0|^13.0",
+        "nesbot/carbon": "^2.0|^3.0",
+        "webklex/php-imap": "^6.0",
+        "padosoft/askmydocs-connector-base": "^1.1"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^11.0|^12.0",
+        "orchestra/testbench": "^10.0|^11.0",
+        "mockery/mockery": "^1.6",
+        "phpstan/phpstan": "^2.0",
+        "laravel/pint": "^1.18"
+    },
+    "autoload": {
+        "psr-4": { "Padosoft\\AskMyDocsConnectorImap\\": "src/" }
+    },
+    "autoload-dev": {
+        "psr-4": { "Padosoft\\AskMyDocsConnectorImap\\Tests\\": "tests/" }
+    },
+    "extra": {
+        "laravel": {
+            "providers": ["Padosoft\\AskMyDocsConnectorImap\\ImapServiceProvider"]
+        },
+        "askmydocs": {
+            "connectors": ["Padosoft\\AskMyDocsConnectorImap\\ImapConnector"]
+        }
+    },
+    "scripts": {
+        "test": "vendor/bin/phpunit",
+        "format": "vendor/bin/pint",
+        "analyse": "vendor/bin/phpstan analyse"
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true,
+    "config": { "sort-packages": true }
+}
