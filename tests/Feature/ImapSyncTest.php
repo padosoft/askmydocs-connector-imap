@@ -69,6 +69,42 @@ final class ImapSyncTest extends TestCase
         return $inst;
     }
 
+    private function installationWithoutAttachments(): ConnectorInstallation
+    {
+        $inst = ConnectorInstallation::create([
+            'tenant_id' => 'default',
+            'connector_name' => 'imap',
+            'config_json' => [
+                'auth_mode' => 'basic',
+                'project_key' => 'kb-imap',
+                'connection' => ['host' => 'h', 'username' => 'u'],
+            ],
+            'status' => 'active',
+        ]);
+        $this->app->make(OAuthCredentialVault::class)->setCredentials($inst->id, accessToken: 'pw', refreshToken: null, expiresAt: null, extra: ['auth_mode' => 'basic']);
+
+        return $inst;
+    }
+
+    public function test_sync_full_uses_provider_default_attachment_allowlist(): void
+    {
+        Storage::fake('local');
+        $att = new ImapAttachment('fattura.pdf', 'application/pdf', 100, false, '%PDF-1.4');
+        $msg = new ImapMessage(
+            uid: 7, uidValidity: 1, mailbox: 'INBOX', messageId: '<m2@x>', inReplyTo: null, references: [],
+            fromName: 'Mario', fromEmail: 'mario@acme.com', to: [], cc: [], date: Carbon::now(),
+            subject: 'Default allowlist', flags: [], labels: [], textBody: 'corpo', htmlBody: null, rawHeaders: [], attachments: [$att],
+        );
+        $this->seedClient(new FakeImapClient(['INBOX' => [$msg]], uidValidity: 1));
+        $inst = $this->installationWithoutAttachments();
+
+        $result = $this->app->make(ImapConnector::class)->syncFull($inst->id);
+
+        // provider default allows pdf — 1 email + 1 attachment must both be ingested
+        $this->assertSame(2, $result->documentsAdded);
+        $this->assertSame([], $result->errors);
+    }
+
     public function test_sync_full_dispatches_email_and_attachment(): void
     {
         Storage::fake('local');

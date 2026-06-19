@@ -286,6 +286,9 @@ class ImapConnector extends BaseConnector
         $config['date_window_days'] ??= $defaults['date_window_days'] ?? 365;
         $config['skip_auto_generated'] ??= $defaults['skip_auto_generated'] ?? true;
         $config['body_format'] ??= $defaults['body_format'] ?? 'prefer_text';
+        if (! is_array($config['folders'] ?? null)) {
+            $config['folders'] = [];
+        }
         $config['folders']['exclude'] = $config['folders']['exclude'] ?? ($defaults['folders_exclude'] ?? []);
 
         return $config;
