@@ -225,4 +225,75 @@ final class ImapXoauthTest extends TestCase
         // Credentials still cleared
         $this->assertNull($vault->getAccessToken($inst->id));
     }
+
+    public function test_xoauth_microsoft_callback_includes_scope_and_stores_tokens(): void
+    {
+        config([
+            'connectors.providers.imap.xoauth2.microsoft' => [
+                'client_id' => 'ms-client-id',
+                'client_secret' => 'ms-client-secret',
+                'redirect_uri' => 'https://app.test/oauth/callback',
+                'authorize_url' => 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
+                'token_url' => 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
+                'imap_host' => 'outlook.office365.com',
+                'scopes' => 'https://outlook.office.com/IMAP.AccessAsUser.All offline_access openid email',
+            ],
+        ]);
+
+        Http::fake([
+            'https://login.microsoftonline.com/common/oauth2/v2.0/token' => Http::response([
+                'access_token' => 'ms-at',
+                'refresh_token' => 'ms-rt',
+                'expires_in' => 3600,
+                'token_type' => 'Bearer',
+            ], 200),
+        ]);
+
+        $inst = ConnectorInstallation::create([
+            'tenant_id' => 'default',
+            'connector_name' => 'imap',
+            'config_json' => [
+                'auth_mode' => 'xoauth2',
+                'xoauth2_provider' => 'microsoft',
+                'connection' => [
+                    'host' => 'outlook.office365.com',
+                    'port' => 993,
+                    'encryption' => 'ssl',
+                    'username' => 'user@contoso.com',
+                ],
+            ],
+            'status' => 'pending',
+        ]);
+
+        $connector = $this->app->make(ImapConnector::class);
+
+        // Initiate to seed a state token
+        $url = $connector->initiateOAuth($inst->id);
+        parse_str((string) parse_url($url, PHP_URL_QUERY), $q);
+        $state = (string) ($q['state'] ?? '');
+
+        $req = Request::create('/oauth/callback', 'GET', [
+            'state' => $state,
+            'code' => 'ms-auth-code-456',
+        ]);
+        $connector->handleOAuthCallback($inst->id, $req);
+
+        /** @var OAuthCredentialVault $vault */
+        $vault = $this->app->make(OAuthCredentialVault::class);
+
+        // Access token stored
+        $this->assertSame('ms-at', $vault->getAccessToken($inst->id));
+
+        // Refresh token stored
+        $this->assertSame('ms-rt', $vault->getRefreshToken($inst->id));
+
+        // Verify that scope= was included in the token POST body
+        Http::assertSent(function ($request) {
+            if (! str_contains((string) $request->url(), 'microsoftonline.com')) {
+                return false;
+            }
+
+            return str_contains((string) $request->body(), 'scope=');
+        });
+    }
 }

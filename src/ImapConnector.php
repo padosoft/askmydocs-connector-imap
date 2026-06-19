@@ -117,7 +117,8 @@ class ImapConnector extends BaseConnector
             $revokeUrl = $p['revoke_url'] ?? null;
 
             if (is_string($revokeUrl) && $revokeUrl !== '') {
-                $token = $this->vault->getAccessToken($installationId);
+                $token = $this->vault->getAccessToken($installationId)
+                    ?? $this->vault->getRefreshToken($installationId);
                 if ($token !== null) {
                     try {
                         Http::asForm()->post($revokeUrl, ['token' => $token]);
@@ -454,6 +455,7 @@ class ImapConnector extends BaseConnector
             'redirect_uri' => $p['redirect_uri'] ?? '',
             'grant_type' => 'authorization_code',
             'code' => $code,
+            'scope' => $p['scopes'] ?? '',
         ]);
 
         if (! $resp->successful()) {
