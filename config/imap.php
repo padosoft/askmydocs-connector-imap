@@ -25,6 +25,12 @@ return [
             'revoke_url' => null,
         ],
     ],
+    'routes' => [
+        'enabled' => env('CONNECTOR_IMAP_ROUTES_ENABLED', false),
+        'prefix' => 'admin/connectors/imap',
+        'middleware' => ['web'],
+    ],
+
     'credential_form_url' => env(
         'CONNECTOR_IMAP_CREDENTIAL_FORM_URL',
         env('APP_URL', 'http://localhost').'/admin/connectors/imap/credentials'
