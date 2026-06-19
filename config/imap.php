@@ -28,7 +28,14 @@ return [
     'routes' => [
         'enabled' => env('CONNECTOR_IMAP_ROUTES_ENABLED', false),
         'prefix' => 'admin/connectors/imap',
-        'middleware' => ['web'],
+        // SECURITY: 'auth' is the minimum required middleware — it ensures only
+        // authenticated users can access the credential routes.
+        // Operators MUST append their own admin-authorization middleware to this
+        // array (e.g. a gate/policy such as 'can:manage-connectors') because only
+        // the host application knows its admin roles — this package cannot safely
+        // hardcode a gate name (an undefined gate would 403 every host).
+        // Example: ['web', 'auth', 'can:manage-connectors']
+        'middleware' => ['web', 'auth'],
     ],
 
     'credential_form_url' => env(
