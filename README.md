@@ -432,6 +432,7 @@ Route::get('/connectors/imap/{installation}/oauth/callback', [MyImapAdminControl
 3. A controller that delegates to the connector:
 
 ```php
+use Padosoft\AskMyDocsConnectorBase\Models\ConnectorInstallation;
 use Padosoft\AskMyDocsConnectorImap\ImapConnector;
 use Illuminate\Http\Request;
 
@@ -626,7 +627,7 @@ Under `config_json.folders`:
 | Key | Default | Description |
 |---|---|---|
 | `folders.include` | `[]` | Explicit allowlist of folder names to sync. When non-empty, only these folders are synced and `folders.exclude` is ignored |
-| `folders.exclude` | `["Trash","Spam","Junk","[Gmail]/Spam","[Gmail]/Trash"]` | Folders to skip when `folders.include` is empty |
+| `folders.exclude` | `["Trash", "Spam", "Junk", "[Gmail]/Spam", "[Gmail]/Trash"]` | Folders to skip when `folders.include` is empty |
 
 ### Senders / Recipients
 
