@@ -6,6 +6,7 @@ namespace Padosoft\AskMyDocsConnectorImap;
 
 use Carbon\Carbon;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Padosoft\AskMyDocsConnectorBase\Auth\OAuthCredentialVault;
@@ -111,6 +112,22 @@ class ImapConnector extends BaseConnector
 
     public function disconnect(int $installationId): void
     {
+        if ($this->authMode($installationId) === 'xoauth2') {
+            $p = $this->xoauthProviderConfig($installationId);
+            $revokeUrl = $p['revoke_url'] ?? null;
+
+            if (is_string($revokeUrl) && $revokeUrl !== '') {
+                $token = $this->vault->getAccessToken($installationId);
+                if ($token !== null) {
+                    try {
+                        Http::asForm()->post($revokeUrl, ['token' => $token]);
+                    } catch (\Throwable) {
+                        // Best-effort: revoke failure must never block disconnect.
+                    }
+                }
+            }
+        }
+
         $this->vault->clearCredentials($installationId);
     }
 
@@ -340,11 +357,64 @@ class ImapConnector extends BaseConnector
         return (string) ($config['auth_mode'] ?? 'basic');
     }
 
+    public function refreshTokenIfExpired(int $installationId): ?string
+    {
+        if ($this->authMode($installationId) !== 'xoauth2') {
+            // Basic-auth: password stored as accessToken, never expires.
+            return $this->vault->getAccessToken($installationId);
+        }
+
+        $access = $this->vault->getAccessToken($installationId);
+        if ($access !== null) {
+            return $access; // Still valid.
+        }
+
+        $refresh = $this->vault->getRefreshToken($installationId);
+        if ($refresh === null) {
+            return null;
+        }
+
+        $p = $this->xoauthProviderConfig($installationId);
+
+        $resp = Http::asForm()->acceptJson()->post((string) ($p['token_url'] ?? ''), [
+            'client_id' => $p['client_id'] ?? '',
+            'client_secret' => $p['client_secret'] ?? '',
+            'grant_type' => 'refresh_token',
+            'refresh_token' => $refresh,
+        ]);
+
+        if (! $resp->successful()) {
+            throw new ConnectorAuthException('XOAUTH2 token refresh failed: HTTP '.$resp->status());
+        }
+
+        $payload = (array) $resp->json();
+        $expiresAt = isset($payload['expires_in'])
+            ? Carbon::now()->addSeconds((int) $payload['expires_in'])
+            : null;
+        $newRefresh = is_string($payload['refresh_token'] ?? null)
+            ? $payload['refresh_token']
+            : $refresh;
+
+        $this->vault->setCredentials(
+            $installationId,
+            accessToken: (string) $payload['access_token'],
+            refreshToken: $newRefresh,
+            expiresAt: $expiresAt,
+            extra: $this->vault->getExtra($installationId),
+        );
+
+        $this->emitAudit('token_refreshed', installationId: $installationId);
+
+        return (string) $payload['access_token'];
+    }
+
     protected function makeClient(int $installationId): ImapClientInterface
     {
-        $password = (string) ($this->vault->getAccessToken($installationId) ?? '');
+        $secret = $this->authMode($installationId) === 'xoauth2'
+            ? (string) ($this->refreshTokenIfExpired($installationId) ?? '')
+            : (string) ($this->vault->getAccessToken($installationId) ?? '');
 
-        return $this->makeClientWithPassword($installationId, $password);
+        return $this->makeClientWithPassword($installationId, $secret);
     }
 
     protected function makeClientWithPassword(int $installationId, string $secret): ImapClientInterface
@@ -357,16 +427,13 @@ class ImapConnector extends BaseConnector
 
     private function xoauthAuthorizeUrl(int $installationId, string $state): string
     {
-        $config = (array) ($this->loadInstallation($installationId)->config_json ?? []);
-        $provider = (string) ($config['xoauth2_provider'] ?? 'google');
-        $p = (array) config('connectors.providers.imap.xoauth2.'.$provider, []);
+        $p = $this->xoauthProviderConfig($installationId);
 
         return ((string) ($p['authorize_url'] ?? '')).'?'.http_build_query([
             'client_id' => $p['client_id'] ?? '',
             'redirect_uri' => $p['redirect_uri'] ?? '',
             'response_type' => 'code',
-            // TODO(Task 13): move xoauth2 scopes to config when the full token-exchange path lands.
-            'scope' => $provider === 'google' ? 'https://mail.google.com/' : 'https://outlook.office.com/IMAP.AccessAsUser.All offline_access',
+            'scope' => $p['scopes'] ?? '',
             'access_type' => 'offline',
             'state' => $state,
         ]);
@@ -374,7 +441,66 @@ class ImapConnector extends BaseConnector
 
     private function handleXoauthCallback(int $installationId, Request $request): void
     {
-        // Design-ready: exchange code -> tokens. Full implementation deferred (see plan Task 13).
-        throw new ConnectorAuthException('XOAUTH2 mode is configured but token exchange is not enabled in this build.');
+        $code = (string) $request->input('code', '');
+        if ($code === '') {
+            throw new ConnectorAuthException('XOAUTH2 callback: missing authorization code.');
+        }
+
+        $p = $this->xoauthProviderConfig($installationId);
+
+        $resp = Http::asForm()->acceptJson()->post((string) ($p['token_url'] ?? ''), [
+            'client_id' => $p['client_id'] ?? '',
+            'client_secret' => $p['client_secret'] ?? '',
+            'redirect_uri' => $p['redirect_uri'] ?? '',
+            'grant_type' => 'authorization_code',
+            'code' => $code,
+        ]);
+
+        if (! $resp->successful()) {
+            throw new ConnectorAuthException('XOAUTH2 token exchange failed: HTTP '.$resp->status());
+        }
+
+        $payload = (array) $resp->json();
+
+        $expiresAt = isset($payload['expires_in'])
+            ? Carbon::now()->addSeconds((int) $payload['expires_in'])
+            : null;
+
+        $config = (array) ($this->loadInstallation($installationId)->config_json ?? []);
+        $provider = (string) ($config['xoauth2_provider'] ?? 'google');
+
+        $this->vault->setCredentials(
+            $installationId,
+            accessToken: (string) ($payload['access_token'] ?? ''),
+            refreshToken: is_string($payload['refresh_token'] ?? null)
+                ? $payload['refresh_token']
+                : null,
+            expiresAt: $expiresAt,
+            extra: ['auth_mode' => 'xoauth2', 'provider' => $provider],
+        );
+
+        $this->emitAudit('installed', installationId: $installationId, metadata: [
+            'auth_mode' => 'xoauth2',
+            'provider' => $provider,
+        ]);
+    }
+
+    /**
+     * Resolve the provider config block for the given installation.
+     * Provider is determined by `config_json.xoauth2_provider` (default 'google').
+     * Config lives under `connectors.providers.imap.xoauth2.<provider>`.
+     *
+     * NOTE: for XOAUTH2, the IMAP username (mailbox address) MUST be set in
+     * `config_json.connection.username` — the connector does not infer it from
+     * the OAuth token response. Ensure this field is populated before the sync runs.
+     *
+     * @return array<string,mixed>
+     */
+    private function xoauthProviderConfig(int $installationId): array
+    {
+        $config = (array) ($this->loadInstallation($installationId)->config_json ?? []);
+        $provider = (string) ($config['xoauth2_provider'] ?? 'google');
+
+        return (array) config('connectors.providers.imap.xoauth2.'.$provider, []);
     }
 }

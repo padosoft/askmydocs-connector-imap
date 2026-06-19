@@ -11,6 +11,8 @@ return [
             'authorize_url' => 'https://accounts.google.com/o/oauth2/v2/auth',
             'token_url' => 'https://oauth2.googleapis.com/token',
             'imap_host' => 'imap.gmail.com',
+            'scopes' => 'https://mail.google.com/',
+            'revoke_url' => 'https://oauth2.googleapis.com/revoke',
         ],
         'microsoft' => [
             'client_id' => env('CONNECTOR_IMAP_MS_CLIENT_ID'),
@@ -19,6 +21,8 @@ return [
             'authorize_url' => 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
             'token_url' => 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
             'imap_host' => 'outlook.office365.com',
+            'scopes' => 'https://outlook.office.com/IMAP.AccessAsUser.All offline_access openid email',
+            'revoke_url' => null,
         ],
     ],
     'credential_form_url' => env(
