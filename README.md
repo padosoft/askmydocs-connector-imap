@@ -264,7 +264,8 @@ Each email that passes the filters becomes one markdown document ingested into t
 |---|---|
 | `connector` | `imap` |
 | `installation_id` | installation integer ID |
-| `imap_uid` | IMAP UID (used for deletion reconciliation) |
+| `imap_uid` | IMAP UID (numeric string) |
+| `imap_doc_key` | Composite `mailbox:uidvalidity:uid` — stable per-document identity used for deletion reconciliation |
 | `mailbox` | IMAP folder name |
 | `message_id` | `Message-ID` header value |
 | `from_email` | Sender address |
@@ -311,7 +312,7 @@ The result is an **append-mostly** sync: normal daily runs touch only new messag
 
 ### Deletion reconciliation
 
-When `reconcile_deletions: true` is set in `config_json`, after processing new UIDs the connector calls `SEARCH` with no UID filter to get all current UIDs, diffs them against the stored `ingested_uids` list (capped at 1,000 most recent), and calls `softDeleteByRemoteId('imap_uid', $uid)` for each vanished UID. The host's ingestion contract handles the actual deletion of `knowledge_documents` rows.
+When `reconcile_deletions: true` is set in `config_json`, after processing new UIDs the connector calls `SEARCH` with no UID filter to get all current UIDs, diffs them against the stored `ingested_keys` list (capped at 1,000 most recent composite keys), and calls `softDeleteByRemoteId('imap_doc_key', $compositeKey)` for each vanished key. The composite key format is `mailbox:uidvalidity:uid`, which ensures that identical numeric UIDs in different folders or after a UIDVALIDITY roll never cross-delete documents from another folder. The host's ingestion contract handles the actual deletion of `knowledge_documents` rows.
 
 This is disabled by default because the diff query is expensive on large mailboxes. Enable it only when you need the KB to reflect actual deletions.
 

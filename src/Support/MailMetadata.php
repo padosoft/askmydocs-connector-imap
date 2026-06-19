@@ -36,6 +36,7 @@ final class MailMetadata
                 'connector' => 'imap',
                 'installation_id' => $installationId,
                 'imap_uid' => (string) $m->uid,
+                'imap_doc_key' => $m->mailbox.':'.$m->uidValidity.':'.$m->uid,
                 'imap_mailbox' => $m->mailbox,
                 'imap_message_id' => $m->messageId,
             ],

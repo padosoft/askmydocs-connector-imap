@@ -77,5 +77,14 @@ final class ImapReconcileTest extends TestCase
         $connector = $this->app->make(ImapConnector::class);
         $result = $connector->syncIncremental($inst->id, Carbon::now()->subDay());
         $this->assertGreaterThanOrEqual(1, $result->documentsRemoved);
+
+        // Assert the soft-delete used the composite imap_doc_key, not the bare imap_uid.
+        $this->assertNotEmpty($this->spy->softDeletes, 'Expected at least one soft-delete to be recorded.');
+        $softDelete = $this->spy->softDeletes[0];
+        $this->assertSame('imap_doc_key', $softDelete['metadataKey']);
+        // The composite key for the vanished uid=2 in INBOX with uidvalidity=1 must be present.
+        $this->assertStringContainsString('INBOX:', $softDelete['remoteId']);
+        $this->assertStringContainsString(':2', $softDelete['remoteId']);
+        $this->assertSame('INBOX:1:2', $softDelete['remoteId']);
     }
 }

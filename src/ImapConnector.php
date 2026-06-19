@@ -191,28 +191,37 @@ class ImapConnector extends BaseConnector
 
                 $state[$mailbox] = ['uidvalidity' => $r['uidValidity'], 'last_uid' => $maxUid];
 
+                $thisRunKeys = array_map(
+                    fn (int $uid) => $this->docKey($mailbox, $r['uidValidity'], $uid),
+                    $r['uids'],
+                );
+
                 if ($full) {
-                    $mailboxState['ingested_uids'] = $r['uids'];
+                    $mailboxState['ingested_keys'] = $thisRunKeys;
                 }
 
                 if (($config['reconcile_deletions'] ?? false) === true) {
-                    $seen = (array) ($mailboxState['ingested_uids'] ?? []);
-                    $current = $client->searchUids($mailbox, null, null);
-                    $vanished = array_diff($seen, $current);
-                    foreach ($vanished as $goneUid) {
-                        if ($this->softDeleteByMetadataKey($installation, 'imap_uid', (string) $goneUid)) {
+                    $seen = array_map('strval', (array) ($mailboxState['ingested_keys'] ?? []));
+                    $currentUids = $client->searchUids($mailbox, null, null);
+                    $currentKeys = array_map(
+                        fn (int $uid) => $this->docKey($mailbox, $r['uidValidity'], $uid),
+                        $currentUids,
+                    );
+                    $vanished = array_diff($seen, $currentKeys);
+                    foreach ($vanished as $goneKey) {
+                        if ($this->softDeleteByMetadataKey($installation, 'imap_doc_key', $goneKey)) {
                             $removed++;
                         }
                     }
-                    $state[$mailbox]['ingested_uids'] = array_slice(
-                        array_unique(array_merge($current, $r['uids'])), -1000
+                    $state[$mailbox]['ingested_keys'] = array_slice(
+                        array_unique(array_merge($currentKeys, $thisRunKeys)), -1000
                     );
                 } else {
                     // keep a capped recent set for a future reconcile run
-                    $prior = (array) ($mailboxState['ingested_uids'] ?? []);
-                    $state[$mailbox]['ingested_uids'] = array_values(array_slice(
-                        array_unique(array_merge($prior, $r['uids'])), -1000
-                    ));
+                    $prior = array_map('strval', (array) ($mailboxState['ingested_keys'] ?? []));
+                    $state[$mailbox]['ingested_keys'] = array_slice(
+                        array_unique(array_merge($prior, $thisRunKeys)), -1000
+                    );
                 }
             }
         } catch (ConnectorPaginationLimitException) {
@@ -297,6 +306,11 @@ class ImapConnector extends BaseConnector
         }
 
         return $count;
+    }
+
+    private function docKey(string $mailbox, int $uidValidity, int $uid): string
+    {
+        return $mailbox.':'.$uidValidity.':'.$uid;
     }
 
     /**
