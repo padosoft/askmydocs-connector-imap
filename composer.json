@@ -5,12 +5,13 @@
     "license": "Apache-2.0",
     "require": {
         "php": "^8.3",
-        "illuminate/support": "^12.0|^13.0",
-        "illuminate/http": "^12.0|^13.0",
         "illuminate/contracts": "^12.0|^13.0",
+        "illuminate/http": "^12.0|^13.0",
+        "illuminate/support": "^12.0|^13.0",
+        "league/html-to-markdown": "5.1",
         "nesbot/carbon": "^2.0|^3.0",
-        "webklex/php-imap": "^6.0",
-        "padosoft/askmydocs-connector-base": "^1.1"
+        "padosoft/askmydocs-connector-base": "^1.1",
+        "webklex/php-imap": "^6.0"
     },
     "require-dev": {
         "phpunit/phpunit": "^11.0|^12.0",

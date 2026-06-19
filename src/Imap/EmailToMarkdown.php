@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Padosoft\AskMyDocsConnectorImap\Imap;
 
+use League\HTMLToMarkdown\HtmlConverter;
+
 final class EmailToMarkdown
 {
     public function render(ImapMessage $m, bool $preferText = true, bool $stripQuoted = false): string
@@ -52,11 +54,19 @@ final class EmailToMarkdown
 
     private function htmlToMarkdown(string $html): string
     {
-        $html = preg_replace('#<\s*br\s*/?>#i', "\n", $html) ?? $html;
-        $html = preg_replace('#</\s*(p|div|h[1-6]|li)\s*>#i', "\n\n", $html) ?? $html;
-        $text = strip_tags($html);
+        $converter = new HtmlConverter([
+            'strip_tags' => true,           // drop unknown tags rather than keep raw
+            'remove_nodes' => 'script style head',
+            'hard_break' => true,
+            'use_autolinks' => false,
+        ]);
 
-        return trim(html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+        try {
+            return trim($converter->convert($html));
+        } catch (\Throwable) {
+            // Defensive: malformed HTML never breaks ingestion — fall back to text.
+            return trim(html_entity_decode(strip_tags($html), ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+        }
     }
 
     private function stripQuoted(string $body): string

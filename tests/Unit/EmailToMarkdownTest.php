@@ -56,4 +56,18 @@ final class EmailToMarkdownTest extends TestCase
         $this->assertStringContainsString('Risposta nuova', $md);
         $this->assertStringNotContainsString('vecchia citazione', $md);
     }
+
+    public function test_html_bold_and_link_become_markdown(): void
+    {
+        $md = (new EmailToMarkdown)->render($this->message(null, '<p>Vedi <a href="https://x.io">qui</a> e <strong>ora</strong>.</p>'));
+        $this->assertStringContainsString('[qui](https://x.io)', $md);
+        $this->assertStringContainsString('**ora**', $md);
+    }
+
+    public function test_html_list_becomes_markdown_bullets(): void
+    {
+        $md = (new EmailToMarkdown)->render($this->message(null, '<ul><li>uno</li><li>due</li></ul>'));
+        $this->assertStringContainsString('- uno', $md);
+        $this->assertStringContainsString('- due', $md);
+    }
 }
