@@ -12,10 +12,12 @@ use Illuminate\Support\Str;
 use Padosoft\AskMyDocsConnectorBase\Auth\OAuthCredentialVault;
 use Padosoft\AskMyDocsConnectorBase\BaseConnector;
 use Padosoft\AskMyDocsConnectorBase\Contracts\ConnectorIngestionContract;
+use Padosoft\AskMyDocsConnectorBase\Contracts\SupportsCredentialForm;
 use Padosoft\AskMyDocsConnectorBase\Exceptions\ConnectorAuthException;
 use Padosoft\AskMyDocsConnectorBase\Exceptions\ConnectorPaginationLimitException;
 use Padosoft\AskMyDocsConnectorBase\HealthStatus;
 use Padosoft\AskMyDocsConnectorBase\Models\ConnectorInstallation;
+use Padosoft\AskMyDocsConnectorBase\Support\CredentialField;
 use Padosoft\AskMyDocsConnectorBase\Support\TenantContext;
 use Padosoft\AskMyDocsConnectorBase\SyncResult;
 use Padosoft\AskMyDocsConnectorImap\Imap\AttachmentPolicy;
@@ -27,7 +29,7 @@ use Padosoft\AskMyDocsConnectorImap\Imap\MailboxWalker;
 use Padosoft\AskMyDocsConnectorImap\Imap\MessageFilter;
 use Padosoft\AskMyDocsConnectorImap\Support\MailMetadata;
 
-class ImapConnector extends BaseConnector
+class ImapConnector extends BaseConnector implements SupportsCredentialForm
 {
     public function __construct(
         OAuthCredentialVault $vault,
@@ -57,6 +59,95 @@ class ImapConnector extends BaseConnector
     {
         // Used only in xoauth2 mode; provider-specific scopes resolved at runtime.
         return [];
+    }
+
+    public function credentialFormSchema(): array
+    {
+        $basicOnly = ['field' => 'auth_mode', 'equals' => 'basic'];
+        $xoauthOnly = ['field' => 'auth_mode', 'equals' => 'xoauth2'];
+
+        $fields = [
+            new CredentialField(
+                name: 'auth_mode',
+                label: 'Authentication Mode',
+                type: 'select',
+                target: 'auth_mode',
+                required: true,
+                default: 'basic',
+                options: ['basic' => 'Password / App password', 'xoauth2' => 'OAuth2 (Gmail / Microsoft 365)'],
+                group: 'Authentication',
+            ),
+            new CredentialField(
+                name: 'xoauth2_provider',
+                label: 'OAuth2 Provider',
+                type: 'select',
+                target: 'provider',
+                default: 'google',
+                options: ['google' => 'Gmail', 'microsoft' => 'Microsoft 365'],
+                showIf: $xoauthOnly,
+                group: 'Authentication',
+            ),
+            new CredentialField(
+                name: 'host',
+                label: 'IMAP Host',
+                type: 'text',
+                target: 'connection',
+                required: true,
+                showIf: $basicOnly,
+                help: 'e.g. imap.example.com',
+                group: 'Server',
+            ),
+            new CredentialField(
+                name: 'port',
+                label: 'Port',
+                type: 'number',
+                target: 'connection',
+                default: 993,
+                showIf: $basicOnly,
+                group: 'Server',
+            ),
+            new CredentialField(
+                name: 'encryption',
+                label: 'Encryption',
+                type: 'select',
+                target: 'connection',
+                default: 'ssl',
+                options: ['ssl' => 'SSL/TLS', 'tls' => 'TLS (implicit)', 'starttls' => 'STARTTLS', 'none' => 'None'],
+                showIf: $basicOnly,
+                group: 'Server',
+            ),
+            new CredentialField(
+                name: 'validate_cert',
+                label: 'Validate Certificate',
+                type: 'checkbox',
+                target: 'connection',
+                default: true,
+                showIf: $basicOnly,
+                group: 'Server',
+            ),
+            new CredentialField(
+                name: 'username',
+                label: 'Username / Email',
+                type: 'text',
+                target: 'connection',
+                required: true,
+                help: 'Full email address / mailbox login',
+                group: 'Credentials',
+            ),
+            new CredentialField(
+                name: 'password',
+                label: 'Password',
+                type: 'password',
+                target: 'secret',
+                required: true,
+                secret: true,
+                showIf: $basicOnly,
+                help: 'Password or app-specific password',
+                group: 'Credentials',
+            ),
+        ];
+
+        return array_map(static fn (CredentialField $f) => $f->toArray(), $fields);
     }
 
     public function initiateOAuth(int $installationId): string

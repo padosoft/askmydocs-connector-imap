@@ -86,7 +86,7 @@ require ───────▶│ connector-imap           │
                              ▼
                 ┌──────────────────────────────┐
                 │ padosoft/askmydocs-connector-│
-                │ base v1.1.0+                 │
+                │ base v1.2.0+                 │
                 │ ConnectorRegistry            │
                 └────────────┬─────────────────┘
                              │
@@ -347,6 +347,8 @@ CONNECTOR_IMAP_MS_REDIRECT_URI=
 ## Integration modes
 
 The package supports two integration modes for credential collection. Choose the one that fits your host app's admin architecture.
+
+> **Native form rendering (connector-base ^1.2+):** `ImapConnector` implements `Padosoft\AskMyDocsConnectorBase\Contracts\SupportsCredentialForm`. On hosts running connector-base ^1.2, the AskMyDocs admin UI detects this interface at install time, calls `credentialFormSchema()`, and renders a native credential form — covering `auth_mode`, `xoauth2_provider`, `host`, `port`, `encryption`, `validate_cert`, `username`, and `password` across three logical groups. This is the recommended path for Mode A hosts on base ^1.2: no Blade layer publication required.
 
 ---
 

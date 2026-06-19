@@ -6,6 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This pr
 
 ---
 
+## [1.2.0] — 2026-06-19
+
+### Added
+
+- **`SupportsCredentialForm` implementation** — `ImapConnector` now implements `Padosoft\AskMyDocsConnectorBase\Contracts\SupportsCredentialForm`, advertising its full credential-form schema so AskMyDocs hosts on connector-base ^1.2 can render a native admin form (Mode A) without the optional Blade HTTP layer. The schema covers 8 fields across three groups (Authentication, Server, Credentials) including `auth_mode`/`xoauth2_provider` selects, connection fields (`host`, `port`, `encryption`, `validate_cert`, `username`), and the `password` secret field. Requires `padosoft/askmydocs-connector-base: ^1.2`.
+
+---
+
 ## [1.1.0] — 2026-06-19
 
 ### Added
