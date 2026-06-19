@@ -102,7 +102,7 @@
 
             <label for="encryption">Encryption</label>
             <select id="encryption" name="encryption" required>
-                @foreach (['ssl' => 'SSL/TLS (recommended)', 'tls' => 'STARTTLS', 'starttls' => 'STARTTLS (explicit)', 'none' => 'None (plaintext)'] as $value => $label)
+                @foreach (['ssl' => 'SSL/TLS (recommended)', 'tls' => 'TLS (implicit)', 'starttls' => 'STARTTLS (explicit)', 'none' => 'None (plaintext)'] as $value => $label)
                     <option
                         value="{{ $value }}"
                         @selected(old('encryption', $installation->config_json['connection']['encryption'] ?? 'ssl') === $value)

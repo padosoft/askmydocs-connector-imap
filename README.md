@@ -831,6 +831,7 @@ The live test calls `ping()` (which sends `CAPABILITY` + `LOGIN`) and `listMailb
 | **Attachments missing from KB** | File over 25 MB limit | Raise `attachments.max_size_mb` in `config_json` |
 | **Gmail folders not found** | Gmail uses `[Gmail]/All Mail`, `[Gmail]/Sent Mail`, etc. | Use the exact folder names shown by your IMAP client. The default `folders_exclude` already excludes `[Gmail]/Spam` and `[Gmail]/Trash` |
 | **Deleted emails reappear in RAG** | `reconcile_deletions` is `false` (default) | Set `reconcile_deletions: true` in `config_json` (note: expensive on large mailboxes) |
+| **Microsoft 365 disconnect does not revoke upstream token** | M365 has no OAuth revoke endpoint (known Microsoft limitation) | `disconnect` clears locally stored credentials, but the upstream access token remains valid until it expires (typically 60 min). Sessions already authenticated with that token will continue to work until expiry; request new authorization from the user if needed |
 | **PHPStan OOMs locally** | Default memory limit too low | Run `vendor/bin/phpstan analyse --memory-limit=512M` or use `composer analyse` |
 
 ## Roadmap
