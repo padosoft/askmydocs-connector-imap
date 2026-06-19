@@ -158,6 +158,7 @@ class ImapConnector extends BaseConnector
 
         $state = (array) ($this->vault->getExtra($installationId)['mailboxes_state'] ?? []);
         $added = 0;
+        $removed = 0;
         $errors = [];
         $processed = 0;
 
@@ -189,6 +190,30 @@ class ImapConnector extends BaseConnector
                 }
 
                 $state[$mailbox] = ['uidvalidity' => $r['uidValidity'], 'last_uid' => $maxUid];
+
+                if ($full) {
+                    $mailboxState['ingested_uids'] = $r['uids'];
+                }
+
+                if (($config['reconcile_deletions'] ?? false) === true) {
+                    $seen = (array) ($mailboxState['ingested_uids'] ?? []);
+                    $current = $client->searchUids($mailbox, null, null);
+                    $vanished = array_diff($seen, $current);
+                    foreach ($vanished as $goneUid) {
+                        if ($this->softDeleteByMetadataKey($installation, 'imap_uid', (string) $goneUid)) {
+                            $removed++;
+                        }
+                    }
+                    $state[$mailbox]['ingested_uids'] = array_slice(
+                        array_unique(array_merge($current, $r['uids'])), -1000
+                    );
+                } else {
+                    // keep a capped recent set for a future reconcile run
+                    $prior = (array) ($mailboxState['ingested_uids'] ?? []);
+                    $state[$mailbox]['ingested_uids'] = array_values(array_slice(
+                        array_unique(array_merge($prior, $r['uids'])), -1000
+                    ));
+                }
             }
         } catch (ConnectorPaginationLimitException) {
             $errors[] = sprintf('sync truncated at max_messages_per_sync=%d', $maxMessages);
@@ -201,7 +226,7 @@ class ImapConnector extends BaseConnector
         return new SyncResult(
             documentsAdded: $full ? $added : 0,
             documentsUpdated: $full ? 0 : $added,
-            documentsRemoved: 0,
+            documentsRemoved: $removed,
             errors: $errors,
             completedAt: Carbon::now(),
         );

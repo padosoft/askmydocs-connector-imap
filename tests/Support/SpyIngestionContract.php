@@ -20,6 +20,9 @@ final class SpyIngestionContract implements ConnectorIngestionContract
     /** @var list<array<string,mixed>> */
     public array $dispatches = [];
 
+    /** @var list<array{installation: ConnectorInstallation, metadataKey: string, remoteId: string}> */
+    public array $softDeletes = [];
+
     public function dispatchIngestion(
         string $projectKey,
         string $relativePath,
@@ -71,6 +74,12 @@ final class SpyIngestionContract implements ConnectorIngestionContract
         string $metadataKey,
         string $remoteId,
     ): bool {
-        return false;
+        $this->softDeletes[] = [
+            'installation' => $installation,
+            'metadataKey' => $metadataKey,
+            'remoteId' => $remoteId,
+        ];
+
+        return true;
     }
 }
