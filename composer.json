@@ -36,7 +36,7 @@
     "scripts": {
         "test": "vendor/bin/phpunit",
         "format": "vendor/bin/pint",
-        "analyse": "vendor/bin/phpstan analyse"
+        "analyse": "vendor/bin/phpstan analyse --memory-limit=512M"
     },
     "minimum-stability": "dev",
     "prefer-stable": true,
