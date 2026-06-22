@@ -140,4 +140,33 @@ final class ImapSyncTest extends TestCase
         $state = $this->app->make(OAuthCredentialVault::class)->getExtra($inst->id);
         $this->assertSame(2, $state['mailboxes_state']['INBOX']['last_uid']);
     }
+
+    public function test_sync_full_uses_default_project_when_project_key_is_empty(): void
+    {
+        config()->set('kb.ingest.default_project', 'tenant-kb');
+        Storage::fake('local');
+        $msg = new ImapMessage(
+            uid: 9, uidValidity: 1, mailbox: 'INBOX', messageId: '<m3@x>', inReplyTo: null, references: [],
+            fromName: 'Mario', fromEmail: 'mario@acme.com', to: [], cc: [], date: Carbon::now(),
+            subject: 'Inherited project key', flags: [], labels: [], textBody: 'corpo', htmlBody: null, rawHeaders: [], attachments: [],
+        );
+        $this->seedClient(new FakeImapClient(['INBOX' => [$msg]], uidValidity: 1));
+
+        $inst = ConnectorInstallation::create([
+            'tenant_id' => 'default',
+            'connector_name' => 'imap',
+            'config_json' => [
+                'auth_mode' => 'basic',
+                'project_key' => '',
+                'connection' => ['host' => 'h', 'username' => 'u'],
+            ],
+            'status' => 'active',
+        ]);
+        $this->app->make(OAuthCredentialVault::class)->setCredentials($inst->id, accessToken: 'pw', refreshToken: null, expiresAt: null, extra: ['auth_mode' => 'basic']);
+
+        $result = $this->app->make(ImapConnector::class)->syncFull($inst->id);
+
+        $this->assertSame(1, $result->documentsAdded);
+        $this->assertSame('tenant-kb', $this->spy->dispatches[0]['projectKey']);
+    }
 }

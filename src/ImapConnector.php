@@ -255,7 +255,7 @@ class ImapConnector extends BaseConnector implements SupportsCredentialForm
     {
         $installation = $this->loadInstallation($installationId);
         $config = $this->resolveConfig((array) ($installation->config_json ?? []));
-        $projectKey = (string) ($config['project_key'] ?? ('connector-'.$this->key()));
+        $projectKey = $this->resolveProjectKey($installation);
 
         $client = $this->makeClient($installationId);
         $walker = new MailboxWalker($client, $config);
