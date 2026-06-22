@@ -6,6 +6,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This pr
 
 ---
 
+## [1.3.0] — 2026-06-22
+
+### Changed
+
+- Adopt connector-base v1.3 **multi-account + project binding**: the ingest project is now resolved via `BaseConnector::resolveProjectKey($installation)` (installation `project_key` → `kb.ingest.default_project` → `'default'`), replacing the per-connector `connector-imap` synthetic-project fallback. Empty `project_key` inherits the tenant default. Requires `padosoft/askmydocs-connector-base` `^1.3`.
+
 ## [1.2.0] — 2026-06-19
 
 ### Added

@@ -600,7 +600,7 @@ All knobs live in the installation's `config_json` column. Provider-level defaul
 
 | Key | Default | Description |
 |---|---|---|
-| `project_key` | `"connector-imap"` | KB project key under which documents are stored |
+| `project_key` | tenant default (`kb.ingest.default_project`, else `default`) | KB project key under which documents are stored; leave empty to inherit the tenant default (resolved by `BaseConnector::resolveProjectKey()`) |
 | `date_window_days` | `365` | How far back to look for messages. `0` disables the window (all history) |
 | `only_unseen` | `false` | Only process messages not yet marked `\Seen` |
 | `only_flagged` | `false` | Only process messages marked `\Flagged` |
