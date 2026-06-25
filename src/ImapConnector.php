@@ -12,7 +12,9 @@ use Illuminate\Support\Str;
 use Padosoft\AskMyDocsConnectorBase\Auth\OAuthCredentialVault;
 use Padosoft\AskMyDocsConnectorBase\BaseConnector;
 use Padosoft\AskMyDocsConnectorBase\Contracts\ConnectorIngestionContract;
+use Padosoft\AskMyDocsConnectorBase\Contracts\SupportsConnectionSettings;
 use Padosoft\AskMyDocsConnectorBase\Contracts\SupportsCredentialForm;
+use Padosoft\AskMyDocsConnectorBase\Contracts\SupportsFolderDiscovery;
 use Padosoft\AskMyDocsConnectorBase\Exceptions\ConnectorAuthException;
 use Padosoft\AskMyDocsConnectorBase\Exceptions\ConnectorPaginationLimitException;
 use Padosoft\AskMyDocsConnectorBase\HealthStatus;
@@ -29,7 +31,7 @@ use Padosoft\AskMyDocsConnectorImap\Imap\MailboxWalker;
 use Padosoft\AskMyDocsConnectorImap\Imap\MessageFilter;
 use Padosoft\AskMyDocsConnectorImap\Support\MailMetadata;
 
-class ImapConnector extends BaseConnector implements SupportsCredentialForm
+class ImapConnector extends BaseConnector implements SupportsConnectionSettings, SupportsCredentialForm, SupportsFolderDiscovery
 {
     public function __construct(
         OAuthCredentialVault $vault,
@@ -144,6 +146,156 @@ class ImapConnector extends BaseConnector implements SupportsCredentialForm
                 showIf: $basicOnly,
                 help: 'Password or app-specific password',
                 group: 'Credentials',
+            ),
+        ];
+
+        return array_map(static fn (CredentialField $f) => $f->toArray(), $fields);
+    }
+
+    /**
+     * Live mailbox/label paths for an installation — the data source behind the
+     * admin folder picker. Reuses the connector's own client builder so basic
+     * AND xoauth2 (with token refresh) both work; the host never rebuilds the
+     * client. The returned paths are verbatim, so a picked value round-trips 1:1
+     * with config_json.folders.include / .exclude.
+     *
+     * @return list<string>
+     */
+    public function listAvailableFolders(int $installationId): array
+    {
+        $client = $this->makeClient($installationId);
+
+        try {
+            return $client->listMailboxes();
+        } finally {
+            // Safe even if connect failed inside listMailboxes() — close() is a
+            // no-op when the client never connected.
+            $client->close();
+        }
+    }
+
+    /**
+     * The editable post-install sync settings the host renders as a generic,
+     * schema-driven editor. Every field targets config_json (dotted name = nested
+     * path the connector reads back at sync time) and is never secret. Folder
+     * fields are live multiselects backed by {@see listAvailableFolders()}.
+     *
+     * @return list<array<string,mixed>>
+     */
+    public function connectionSettingsSchema(): array
+    {
+        $fields = [
+            // Folders — which mailboxes/labels to sync. include wins when non-empty.
+            new CredentialField(
+                name: 'folders.include', label: 'Folders to sync', type: 'multiselect',
+                target: 'config', default: [], discovery: 'folders', group: 'Folders',
+                help: 'Whitelist. Leave empty to sync every folder except the excluded ones.',
+            ),
+            new CredentialField(
+                name: 'folders.exclude', label: 'Folders to skip', type: 'multiselect',
+                target: 'config', default: ['Trash', 'Spam', 'Junk', '[Gmail]/Spam', '[Gmail]/Trash'],
+                discovery: 'folders', group: 'Folders',
+                help: 'Blacklist. Ignored when "Folders to sync" is set.',
+            ),
+
+            // Sync window — how far back to walk.
+            new CredentialField(
+                name: 'date_window_days', label: 'Sync window (days)', type: 'number',
+                target: 'config', default: 365, group: 'Sync window',
+                help: 'How many days back to import. 0 = all history.',
+            ),
+
+            // Scope — which messages within the window.
+            new CredentialField(
+                name: 'only_unseen', label: 'Only unread messages', type: 'checkbox',
+                target: 'config', default: false, group: 'Scope',
+            ),
+            new CredentialField(
+                name: 'only_flagged', label: 'Only flagged messages', type: 'checkbox',
+                target: 'config', default: false, group: 'Scope',
+            ),
+            new CredentialField(
+                name: 'reconcile_deletions', label: 'Remove docs for deleted emails', type: 'checkbox',
+                target: 'config', default: false, group: 'Scope',
+                help: 'Soft-delete a KB doc when its source email disappears upstream (UID diff).',
+            ),
+
+            // Content — how each email is rendered.
+            new CredentialField(
+                name: 'body_format', label: 'Body format', type: 'select',
+                target: 'config', default: 'prefer_text', group: 'Content',
+                options: ['prefer_text' => 'Prefer plain text', 'prefer_html' => 'Prefer HTML → Markdown'],
+            ),
+            new CredentialField(
+                name: 'skip_auto_generated', label: 'Skip auto-generated mail', type: 'checkbox',
+                target: 'config', default: true, group: 'Content',
+                help: 'Skip bulk / list / auto-submitted messages (Precedence, Auto-Submitted, List-Unsubscribe).',
+            ),
+            new CredentialField(
+                name: 'strip_quoted_history', label: 'Strip quoted reply history', type: 'checkbox',
+                target: 'config', default: false, group: 'Content',
+            ),
+            new CredentialField(
+                name: 'redact_pii', label: 'Redact PII before ingest', type: 'checkbox',
+                target: 'config', default: false, group: 'Content',
+            ),
+
+            // Filtering — sender / recipient / subject allow & deny lists.
+            new CredentialField(
+                name: 'senders.include', label: 'Only from senders', type: 'tags',
+                target: 'config', default: [], group: 'Filtering',
+                help: 'Full email or bare domain. Empty = any sender.',
+            ),
+            new CredentialField(
+                name: 'senders.exclude', label: 'Exclude senders', type: 'tags',
+                target: 'config', default: [], group: 'Filtering',
+            ),
+            new CredentialField(
+                name: 'recipients.include', label: 'Only to recipients', type: 'tags',
+                target: 'config', default: [], group: 'Filtering',
+            ),
+            new CredentialField(
+                name: 'recipients.exclude', label: 'Exclude recipients', type: 'tags',
+                target: 'config', default: [], group: 'Filtering',
+            ),
+            new CredentialField(
+                name: 'subject.include_keywords', label: 'Subject must contain', type: 'tags',
+                target: 'config', default: [], group: 'Filtering',
+                help: 'Case-insensitive substring match. Empty = any subject.',
+            ),
+            new CredentialField(
+                name: 'subject.exclude_keywords', label: 'Subject must not contain', type: 'tags',
+                target: 'config', default: [], group: 'Filtering',
+            ),
+
+            // Attachments.
+            new CredentialField(
+                name: 'attachments.enabled', label: 'Ingest attachments', type: 'checkbox',
+                target: 'config', default: true, group: 'Attachments',
+            ),
+            new CredentialField(
+                name: 'attachments.allowed_extensions', label: 'Allowed attachment types', type: 'tags',
+                target: 'config',
+                default: ['pdf', 'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx', 'txt', 'csv', 'md', 'rtf', 'odt'],
+                group: 'Attachments',
+            ),
+            new CredentialField(
+                name: 'attachments.max_size_mb', label: 'Max attachment size (MB)', type: 'number',
+                target: 'config', default: 25, group: 'Attachments',
+            ),
+            new CredentialField(
+                name: 'attachments.max_per_email', label: 'Max attachments per email', type: 'number',
+                target: 'config', default: 20, group: 'Attachments',
+            ),
+            new CredentialField(
+                name: 'attachments.skip_inline', label: 'Skip inline attachments', type: 'checkbox',
+                target: 'config', default: true, group: 'Attachments',
+            ),
+
+            // Limits — sync safety bounds.
+            new CredentialField(
+                name: 'limits.max_messages_per_sync', label: 'Max messages per sync', type: 'number',
+                target: 'config', default: 5000, group: 'Limits',
             ),
         ];
 

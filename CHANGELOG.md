@@ -6,6 +6,42 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This pr
 
 ---
 
+## [1.4.0] — 2026-06-25
+
+### Added
+
+- **Folder discovery** — `ImapConnector` implements `SupportsFolderDiscovery`
+  (connector-base ^1.4). `listAvailableFolders()` returns the live mailbox/label
+  paths verbatim, reusing the connector's own `makeClient()` so basic AND
+  xoauth2 (with token refresh) both work — the host no longer reconstructs the
+  IMAP client itself, which also fixes folder discovery for OAuth2 accounts whose
+  access token has expired. `close()` runs in a `finally` (safe even when connect
+  failed). Failures surface as `ConnectorApiException` (unreachable / transient)
+  or `ConnectorAuthException` (credentials rejected), never an empty-but-OK list.
+- **Full settings editor** — `ImapConnector` implements `SupportsConnectionSettings`
+  (connector-base ^1.4). `connectionSettingsSchema()` declares the **entire
+  editable sync surface** as a schema the host renders generically: folder
+  include/exclude (live `multiselect` backed by discovery), sync window, scope
+  flags (`only_unseen`, `only_flagged`, `reconcile_deletions`), content options
+  (`body_format`, `skip_auto_generated`, `strip_quoted_history`, `redact_pii`),
+  sender/recipient/subject filters (`tags`), attachment policy, and sync limits.
+  Each field's dotted `name` is the `config_json` path the sync engine reads back,
+  so a value set in the UI round-trips 1:1. None of these were UI-editable before
+  (they were config-file / API-payload only).
+
+### Changed
+
+- **Requires `padosoft/askmydocs-connector-base` `^1.4`** (for the two new
+  capability interfaces and the `multiselect` / `tags` `CredentialField` types).
+
+### Compatibility
+
+- Fully backward compatible. The new interfaces are additive and opt-in; the sync
+  engine, credential form, and existing `config_json` shape are unchanged. Hosts
+  on connector-base < 1.4 simply do not see the new capabilities.
+
+---
+
 ## [1.3.0] — 2026-06-22
 
 ### Changed

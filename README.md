@@ -350,6 +350,8 @@ The package supports two integration modes for credential collection. Choose the
 
 > **Native form rendering (connector-base ^1.2+):** `ImapConnector` implements `Padosoft\AskMyDocsConnectorBase\Contracts\SupportsCredentialForm`. On hosts running connector-base ^1.2, the AskMyDocs admin UI detects this interface at install time, calls `credentialFormSchema()`, and renders a native credential form — covering `auth_mode`, `xoauth2_provider`, `host`, `port`, `encryption`, `validate_cert`, `username`, and `password` across three logical groups. This is the recommended path for Mode A hosts on base ^1.2: no Blade layer publication required.
 
+> **Folder discovery + full settings editor (connector-base ^1.4+):** `ImapConnector` also implements `SupportsFolderDiscovery` and `SupportsConnectionSettings`. `listAvailableFolders()` returns the live mailbox/label paths (basic AND xoauth2, with token refresh) so the host can offer a **folder picker** for `folders.include` / `folders.exclude`. `connectionSettingsSchema()` declares the **entire editable sync surface** — sync window, folder include/exclude, sender/recipient/subject filters, body format, attachment limits, scope flags — as a generic schema the host renders as a post-install settings editor. Every value lands in `config_json` at its dotted path, exactly what the sync engine reads back.
+
 ---
 
 ### Mode A: Use the package's optional HTTP layer (recommended for most hosts)
