@@ -35,15 +35,16 @@ final class CredentialFormSchemaTest extends TestCase
         $this->assertNotEmpty($this->schema());
     }
 
-    public function test_every_entry_has_eleven_keys(): void
+    public function test_every_entry_has_twelve_keys(): void
     {
-        $expected = ['name', 'label', 'type', 'target', 'required', 'secret', 'default', 'options', 'showIf', 'help', 'group'];
+        // 12 keys since connector-base v1.4 (the additive 'discovery' key).
+        $expected = ['name', 'label', 'type', 'target', 'required', 'secret', 'default', 'options', 'showIf', 'help', 'group', 'discovery'];
         sort($expected);
 
         foreach ($this->schema() as $entry) {
             $keys = array_keys($entry);
             sort($keys);
-            $this->assertSame($expected, $keys, "Field '{$entry['name']}' does not have the expected 11 keys.");
+            $this->assertSame($expected, $keys, "Field '{$entry['name']}' does not have the expected 12 keys.");
         }
     }
 
