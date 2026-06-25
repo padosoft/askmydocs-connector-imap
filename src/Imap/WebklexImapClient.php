@@ -6,10 +6,12 @@ namespace Padosoft\AskMyDocsConnectorImap\Imap;
 
 use Carbon\Carbon;
 use Padosoft\AskMyDocsConnectorBase\Exceptions\ConnectorApiException;
+use Padosoft\AskMyDocsConnectorBase\Exceptions\ConnectorAuthException;
 use Webklex\PHPIMAP\Address;
 use Webklex\PHPIMAP\Attachment;
 use Webklex\PHPIMAP\Attribute;
 use Webklex\PHPIMAP\Client;
+use Webklex\PHPIMAP\Exceptions\AuthFailedException;
 use Webklex\PHPIMAP\Message;
 
 final class WebklexImapClient implements ImapClientInterface
@@ -27,6 +29,12 @@ final class WebklexImapClient implements ImapClientInterface
             try {
                 $this->client->connect();
                 $this->connected = true;
+            } catch (AuthFailedException $e) {
+                // Rejected credentials → an AUTH failure (the host must prompt
+                // re-authentication), never a transient outage. Kept distinct so
+                // the sync job stops retrying and SupportsFolderDiscovery surfaces
+                // the right error instead of a misleading 503.
+                throw new ConnectorAuthException('IMAP authentication failed: '.$e->getMessage(), previous: $e);
             } catch (\Throwable $e) {
                 throw new ConnectorApiException('IMAP connect failed: '.$e->getMessage(), previous: $e);
             }

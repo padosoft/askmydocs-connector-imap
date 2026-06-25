@@ -184,6 +184,15 @@ class ImapConnector extends BaseConnector implements SupportsConnectionSettings,
      */
     public function connectionSettingsSchema(): array
     {
+        // Defaults derive from the SAME config block the sync engine reads
+        // (resolveConfig: config('connectors.providers.imap.defaults')), so the
+        // schema advertises a host's overridden defaults rather than silently
+        // re-imposing the package defaults when the generic editor saves a value
+        // for a key that was absent from config_json.
+        $defaults = (array) config('connectors.providers.imap.defaults', []);
+        $attachments = (array) ($defaults['attachments'] ?? []);
+        $limits = (array) ($defaults['limits'] ?? []);
+
         $fields = [
             // Folders — which mailboxes/labels to sync. include wins when non-empty.
             new CredentialField(
@@ -193,7 +202,8 @@ class ImapConnector extends BaseConnector implements SupportsConnectionSettings,
             ),
             new CredentialField(
                 name: 'folders.exclude', label: 'Folders to skip', type: 'multiselect',
-                target: 'config', default: ['Trash', 'Spam', 'Junk', '[Gmail]/Spam', '[Gmail]/Trash'],
+                target: 'config',
+                default: $defaults['folders_exclude'] ?? ['Trash', 'Spam', 'Junk', '[Gmail]/Spam', '[Gmail]/Trash'],
                 discovery: 'folders', group: 'Folders',
                 help: 'Blacklist. Ignored when "Folders to sync" is set.',
             ),
@@ -201,7 +211,7 @@ class ImapConnector extends BaseConnector implements SupportsConnectionSettings,
             // Sync window — how far back to walk.
             new CredentialField(
                 name: 'date_window_days', label: 'Sync window (days)', type: 'number',
-                target: 'config', default: 365, group: 'Sync window',
+                target: 'config', default: (int) ($defaults['date_window_days'] ?? 365), group: 'Sync window',
                 help: 'How many days back to import. 0 = all history.',
             ),
 
@@ -223,12 +233,12 @@ class ImapConnector extends BaseConnector implements SupportsConnectionSettings,
             // Content — how each email is rendered.
             new CredentialField(
                 name: 'body_format', label: 'Body format', type: 'select',
-                target: 'config', default: 'prefer_text', group: 'Content',
+                target: 'config', default: (string) ($defaults['body_format'] ?? 'prefer_text'), group: 'Content',
                 options: ['prefer_text' => 'Prefer plain text', 'prefer_html' => 'Prefer HTML → Markdown'],
             ),
             new CredentialField(
                 name: 'skip_auto_generated', label: 'Skip auto-generated mail', type: 'checkbox',
-                target: 'config', default: true, group: 'Content',
+                target: 'config', default: (bool) ($defaults['skip_auto_generated'] ?? true), group: 'Content',
                 help: 'Skip bulk / list / auto-submitted messages (Precedence, Auto-Submitted, List-Unsubscribe).',
             ),
             new CredentialField(
@@ -271,31 +281,31 @@ class ImapConnector extends BaseConnector implements SupportsConnectionSettings,
             // Attachments.
             new CredentialField(
                 name: 'attachments.enabled', label: 'Ingest attachments', type: 'checkbox',
-                target: 'config', default: true, group: 'Attachments',
+                target: 'config', default: (bool) ($attachments['enabled'] ?? true), group: 'Attachments',
             ),
             new CredentialField(
                 name: 'attachments.allowed_extensions', label: 'Allowed attachment types', type: 'tags',
                 target: 'config',
-                default: ['pdf', 'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx', 'txt', 'csv', 'md', 'rtf', 'odt'],
+                default: $attachments['allowed_extensions'] ?? ['pdf', 'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx', 'txt', 'csv', 'md', 'rtf', 'odt'],
                 group: 'Attachments',
             ),
             new CredentialField(
                 name: 'attachments.max_size_mb', label: 'Max attachment size (MB)', type: 'number',
-                target: 'config', default: 25, group: 'Attachments',
+                target: 'config', default: (int) ($attachments['max_size_mb'] ?? 25), group: 'Attachments',
             ),
             new CredentialField(
                 name: 'attachments.max_per_email', label: 'Max attachments per email', type: 'number',
-                target: 'config', default: 20, group: 'Attachments',
+                target: 'config', default: (int) ($attachments['max_per_email'] ?? 20), group: 'Attachments',
             ),
             new CredentialField(
                 name: 'attachments.skip_inline', label: 'Skip inline attachments', type: 'checkbox',
-                target: 'config', default: true, group: 'Attachments',
+                target: 'config', default: (bool) ($attachments['skip_inline'] ?? true), group: 'Attachments',
             ),
 
             // Limits — sync safety bounds.
             new CredentialField(
                 name: 'limits.max_messages_per_sync', label: 'Max messages per sync', type: 'number',
-                target: 'config', default: 5000, group: 'Limits',
+                target: 'config', default: (int) ($limits['max_messages_per_sync'] ?? 5000), group: 'Limits',
             ),
         ];
 
