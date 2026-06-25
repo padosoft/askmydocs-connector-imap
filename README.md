@@ -633,6 +633,8 @@ Under `config_json.folders`:
 | `folders.include` | `[]` | Explicit allowlist of folder names to sync. When non-empty, only these folders are synced and `folders.exclude` is ignored |
 | `folders.exclude` | `["Trash", "Spam", "Junk", "[Gmail]/Spam", "[Gmail]/Trash"]` | Folders to skip when `folders.include` is empty |
 
+> **Resilient whitelists (v1.4.2):** if a `folders.include` entry no longer exists upstream (e.g. it was deleted from webmail after you configured the connector), the sync does **not** fail — it keeps ingesting the folders that still exist and records each missing one as a non-fatal `SyncResult.errors[]` note (surfaced in the AskMyDocs sync-run view) plus a `Log::warning`.
+
 ### Senders / Recipients
 
 Under `config_json.senders` and `config_json.recipients`:
