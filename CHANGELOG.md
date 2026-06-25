@@ -6,6 +6,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This pr
 
 ---
 
+## [1.4.1] — 2026-06-25
+
+### Fixed
+
+- **Rejected IMAP logins now raise `ConnectorAuthException`, not `ConnectorApiException`.**
+  `WebklexImapClient::ensure()` previously wrapped every connect/login error as
+  `ConnectorApiException`, so a bad-credential folder-discovery attempt looked
+  like a transient 503 and the sync job kept retrying. It now catches webklex's
+  `AuthFailedException` and raises `ConnectorAuthException` (host prompts
+  re-authentication; sync job stops retrying), matching the `SupportsFolderDiscovery`
+  contract. Other connect failures stay `ConnectorApiException` (retryable).
+- **`connectionSettingsSchema()` defaults now derive from
+  `connectors.providers.imap.defaults`** (the same config block `resolveConfig()`
+  reads) instead of hardcoded literals. A host that overrides e.g.
+  `date_window_days` or `folders_exclude` now sees its configured value in the
+  settings editor, so opening/saving settings no longer silently re-imposes the
+  package default.
+
 ## [1.4.0] — 2026-06-25
 
 ### Added

@@ -80,6 +80,20 @@ final class ConnectionSettingsSchemaTest extends TestCase
         $this->assertTrue($this->field('skip_auto_generated')['default']);
     }
 
+    public function test_defaults_track_host_overridden_config_not_hardcoded_values(): void
+    {
+        // A host that overrides the engine config defaults must see those values
+        // in the schema, otherwise the generic editor would persist the package
+        // default and silently override the host's configured sync window.
+        config()->set('connectors.providers.imap.defaults.date_window_days', 90);
+        config()->set('connectors.providers.imap.defaults.folders_exclude', ['Junk']);
+        config()->set('connectors.providers.imap.defaults.attachments.max_size_mb', 5);
+
+        $this->assertSame(90, $this->field('date_window_days')['default']);
+        $this->assertSame(['Junk'], $this->field('folders.exclude')['default']);
+        $this->assertSame(5, $this->field('attachments.max_size_mb')['default']);
+    }
+
     public function test_message_filter_fields_are_tags(): void
     {
         foreach (['senders.include', 'recipients.exclude', 'subject.include_keywords'] as $name) {
