@@ -6,6 +6,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This pr
 
 ---
 
+## [1.4.2] — 2026-06-25
+
+### Added
+
+- **Missing whitelisted folders are now surfaced (non-fatally).** When
+  `folders.include` lists a folder that no longer exists upstream — e.g. the
+  operator whitelisted `a,b,c` and later deleted `b` from webmail — the sync
+  already kept ingesting the folders that DO exist (`a,c`); it now also records
+  each missing folder as a `SyncResult.errors[]` note (visible in the host
+  sync-run observability) and a `Log::warning`, so a stale whitelist is flagged
+  instead of silently skipped. Never a hard failure. `MailboxWalker` gains
+  `missingIncludedMailboxes()` and caches the live folder list so this adds no
+  extra IMAP round trip.
+
 ## [1.4.1] — 2026-06-25
 
 ### Fixed

@@ -38,6 +38,23 @@ final class MailboxWalkerTest extends TestCase
         $this->assertSame(['Trash'], $w->selectedMailboxes());
     }
 
+    public function test_missing_included_folders_are_reported_without_dropping_existing(): void
+    {
+        // Operator whitelisted INBOX, Archive, Spam — but only INBOX exists upstream.
+        $w = new MailboxWalker($this->client(), ['folders' => ['include' => ['INBOX', 'Archive', 'Spam']]]);
+
+        // The folders that DO exist are still selected for sync (no hard failure)...
+        $this->assertSame(['INBOX'], $w->selectedMailboxes());
+        // ...and the included-but-missing ones are reported so the caller can flag them.
+        $this->assertSame(['Archive', 'Spam'], $w->missingIncludedMailboxes());
+    }
+
+    public function test_no_missing_folders_without_an_include_whitelist(): void
+    {
+        $w = new MailboxWalker($this->client(), ['folders' => ['exclude' => ['Trash']]]);
+        $this->assertSame([], $w->missingIncludedMailboxes());
+    }
+
     public function test_incremental_uses_last_uid_when_uidvalidity_matches(): void
     {
         $w = new MailboxWalker($this->client(), []);

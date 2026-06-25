@@ -124,6 +124,41 @@ final class ImapSyncTest extends TestCase
         $this->assertSame([], $result->errors);
     }
 
+    public function test_missing_included_folder_is_surfaced_but_sync_continues(): void
+    {
+        Storage::fake('local');
+        $msg = new ImapMessage(
+            uid: 11, uidValidity: 1, mailbox: 'INBOX', messageId: '<mm@x>', inReplyTo: null, references: [],
+            fromName: 'Mario', fromEmail: 'mario@acme.com', to: [], cc: [], date: Carbon::now(),
+            subject: 'Hello', flags: [], labels: [], textBody: 'body', htmlBody: null, rawHeaders: [], attachments: [],
+        );
+        // Only INBOX exists upstream; the operator also whitelisted 'Archive'
+        // (since deleted from webmail).
+        $this->seedClient(new FakeImapClient(['INBOX' => [$msg]], uidValidity: 1));
+
+        $inst = ConnectorInstallation::create([
+            'tenant_id' => 'default',
+            'connector_name' => 'imap',
+            'config_json' => [
+                'auth_mode' => 'basic',
+                'project_key' => 'kb-imap',
+                'connection' => ['host' => 'h', 'username' => 'u'],
+                'folders' => ['include' => ['INBOX', 'Archive']],
+            ],
+            'status' => 'active',
+        ]);
+        $this->app->make(OAuthCredentialVault::class)->setCredentials($inst->id, accessToken: 'pw', refreshToken: null, expiresAt: null, extra: ['auth_mode' => 'basic']);
+
+        $result = $this->app->make(ImapConnector::class)->syncFull($inst->id);
+
+        // INBOX is still ingested — the connector keeps working...
+        $this->assertSame(1, $result->documentsAdded);
+        // ...and the missing 'Archive' folder is surfaced as a non-fatal note.
+        $this->assertNotEmpty($result->errors);
+        $this->assertStringContainsString('Archive', implode("\n", $result->errors));
+        $this->assertStringContainsString('not found upstream', implode("\n", $result->errors));
+    }
+
     public function test_incremental_persists_uid_watermark(): void
     {
         Storage::fake('local');

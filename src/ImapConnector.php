@@ -7,6 +7,7 @@ namespace Padosoft\AskMyDocsConnectorImap;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Padosoft\AskMyDocsConnectorBase\Auth\OAuthCredentialVault;
@@ -434,6 +435,17 @@ class ImapConnector extends BaseConnector implements SupportsConnectionSettings,
         $processed = 0;
 
         try {
+            // Surface (but never fail on) included folders that no longer exist
+            // upstream — the sync proceeds for the folders that DO exist, and each
+            // stale entry lands in the SyncResult errors[] (visible in the host
+            // sync-run observability) + the log. E.g. an operator whitelists a,b,c
+            // then deletes b from webmail → sync a,c, flag b as missing.
+            foreach ($walker->missingIncludedMailboxes() as $missing) {
+                $note = sprintf("folder '%s' in folders.include not found upstream — skipped", $missing);
+                $errors[] = $note;
+                Log::warning('[connector-imap] '.$note, ['installation_id' => $installationId]);
+            }
+
             foreach ($walker->selectedMailboxes() as $mailbox) {
                 $mailboxState = $full ? [] : (array) ($state[$mailbox] ?? []);
                 $window = $walker->windowSince();
