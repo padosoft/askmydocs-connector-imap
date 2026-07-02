@@ -59,7 +59,7 @@ This package is the smallest possible surface for shipping that integration:
 ## Features
 
 - **Zero-config installation** — composer-extra discovery auto-registers the connector at boot.
-- **Dual authentication** — basic-auth (password / app-password) and full XOAUTH2 (Gmail + Microsoft 365) with code→token exchange, silent access-token refresh, and best-effort revoke.
+- **Triple authentication** — basic-auth (password / app-password), delegated XOAUTH2 (Gmail + Microsoft 365, interactive user sign-in) with code→token exchange + silent refresh + best-effort revoke, and **Microsoft 365 app-only (OAuth2 client-credentials)** for unattended service-principal access to a shared mailbox (`IMAP.AccessAsApp`, no user sign-in).
 - **Real HTML→Markdown** — `league/html-to-markdown` converts HTML bodies preserving bold (`**...**`), links (`[text](url)`), and bullet lists. Unknown or unsafe tags are stripped. A defensive fallback to `strip_tags` protects against malformed HTML.
 - **Document attachments as separate KB docs** — each qualifying attachment is stored independently so the chunker and retriever treat it as a first-class document.
 - **Allowlist + size cap** — attachments accepted only when extension is in the allowlist (pdf, doc, docx, ppt, pptx, xls, xlsx, txt, csv, md, rtf, odt by default) and size is under 25 MB. Inline/embedded images are skipped.
@@ -304,6 +304,78 @@ CONNECTOR_IMAP_MS_REDIRECT_URI=https://your-app.example.com/admin/connectors/ima
 ```
 
 > **Important:** `config_json.connection.username` MUST be the mailbox UPN (e.g. `support@yourcompany.onmicrosoft.com`). Also ensure IMAP is enabled for the mailbox in the Exchange admin centre (Recipients → Mailboxes → Email apps → IMAP: Enabled).
+
+---
+
+### Microsoft 365 — App-only (OAuth2 client credentials)
+
+Use this when you want **unattended, service-to-service** access to a mailbox
+with **no interactive user sign-in** — the modern replacement for IMAP
+basic-auth on Microsoft 365. It relies on the Exchange Online **`IMAP.AccessAsApp`**
+application permission and a service principal scoped to the specific mailbox.
+Pick this (not the delegated XOAUTH2 above) when a customer's sysadmin will
+provision an app registration for you and hand over static technical
+credentials.
+
+Set `config_json.auth_mode = "xoauth2_client_credentials"`. The connector then
+collects **Directory (tenant) ID**, **Application (client) ID**, **Client
+Secret** and the **mailbox** — each installation carries its own values (the
+customer's own Entra tenant + app), so nothing goes in host `.env`. The host
+(`outlook.office365.com` : 993 : ssl) is filled automatically.
+
+#### Sysadmin runbook (give this to the mailbox owner's IT)
+
+1. **Enable IMAP** on the target mailbox (Exchange admin centre → Recipients →
+   Mailboxes → the mailbox → *Email apps* → IMAP: **On**).
+2. **Register an app** in Microsoft Entra ID (**App registrations → New
+   registration**). No redirect URI is needed for app-only. Copy the
+   **Application (client) ID** and the **Directory (tenant) ID**.
+3. **Add the application permission**: *API permissions → Add a permission →
+   APIs my organization uses → **Office 365 Exchange Online** → Application
+   permissions → **`IMAP.AccessAsApp`*** → Add.
+4. **Grant admin consent** for the tenant (the *Grant admin consent for
+   \<org\>* button).
+5. **Create a client secret** (*Certificates & secrets → New client secret*) and
+   copy the **Value** immediately (shown once).
+6. **Register the app's service principal in Exchange Online** (Exchange Online
+   PowerShell) — this step is **mandatory** and the one most often forgotten;
+   without it the token is issued but Exchange rejects the login:
+   ```powershell
+   Install-Module ExchangeOnlineManagement
+   Connect-ExchangeOnline -Organization <tenantId>
+   # <OBJECT_ID> = the Enterprise Application (service principal) Object ID —
+   # NOT the App registration Object ID.
+   New-ServicePrincipal -AppId <CLIENT_ID> -ObjectId <ENTERPRISE_APP_OBJECT_ID>
+   ```
+7. **Scope the app to just this mailbox** (least privilege):
+   ```powershell
+   Add-MailboxPermission -Identity "shared@contoso.com" -User <SERVICE_PRINCIPAL_ID> -AccessRights FullAccess
+   ```
+   (Alternatively restrict with `New-ApplicationAccessPolicy`.)
+8. **Hand over**: **Tenant ID**, **Client ID**, **Client Secret**, and the
+   **mailbox email**.
+
+> The connector verifies the credentials with a live app-only `ping()` before
+> storing anything. If step 6 or 7 was skipped, the token is minted but the IMAP
+> login fails and the connector surfaces a `ConnectorAuthException` naming the
+> exact steps to check — no silent half-connected state.
+
+Reference: [Authenticate an IMAP, POP or SMTP connection using OAuth — client
+credentials grant flow](https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols/how-to-authenticate-an-imap-pop-smtp-application-by-using-oauth#use-client-credentials-grant-flow-to-authenticate-smtp-imap-and-pop-connections).
+
+```json
+{
+  "auth_mode": "xoauth2_client_credentials",
+  "project_key": "support-inbox",
+  "ms_tenant_id": "00000000-0000-0000-0000-000000000000",
+  "ms_client_id": "11111111-1111-1111-1111-111111111111",
+  "connection": { "username": "shared@contoso.com" },
+  "folders": { "include": ["INBOX"] }
+}
+```
+
+The client secret is submitted through the credential form / native settings and
+stored **encrypted in the vault** — never in `config_json`.
 
 ---
 
@@ -595,8 +667,11 @@ All knobs live in the installation's `config_json` column. Provider-level defaul
 
 | Key | Default | Description |
 |---|---|---|
-| `auth_mode` | `"basic"` | `"basic"` (password / app-password) or `"xoauth2"` (Gmail or M365 full OAuth round-trip) |
-| `xoauth2_provider` | `"google"` | Which XOAUTH2 provider to use: `"google"` or `"microsoft"`. Only relevant when `auth_mode = "xoauth2"` |
+| `auth_mode` | `"basic"` | `"basic"` (password / app-password), `"xoauth2"` (Gmail or M365 delegated OAuth round-trip with user sign-in), or `"xoauth2_client_credentials"` (Microsoft 365 app-only / client-credentials, no user sign-in) |
+| `xoauth2_provider` | `"google"` | Which delegated XOAUTH2 provider to use: `"google"` or `"microsoft"`. Only relevant when `auth_mode = "xoauth2"` |
+| `ms_tenant_id` | — | **Required for `xoauth2_client_credentials`.** Microsoft Entra Directory (tenant) ID. Builds the token endpoint |
+| `ms_client_id` | — | **Required for `xoauth2_client_credentials`.** Entra App registration Application (client) ID |
+| `ms_client_secret` | — | **Required for `xoauth2_client_credentials`.** Entra client-secret value. Submitted as a secret and stored encrypted in the vault — never in `config_json` |
 
 ### Core
 
@@ -843,7 +918,7 @@ The live test calls `ping()` (which sends `CAPABILITY` + `LOGIN`) and `listMailb
 ## Roadmap
 
 - [ ] Move to "Production" mode in GCP OAuth consent screen (removes the test-user restriction for public Gmail accounts).
-- [ ] M365 tenant-specific Entra endpoints for single-tenant deployments.
+- [x] M365 tenant-specific Entra endpoints — shipped in v1.5.0 via the app-only (client-credentials) auth mode.
 - [ ] Webhook / IMAP IDLE push mode for near-real-time sync (currently polling via cron cadence).
 - [ ] Sheets and Slides attachment export (analogous to Google Drive connector).
 - [ ] PGP/S-MIME header metadata capture.

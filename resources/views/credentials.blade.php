@@ -66,6 +66,46 @@
     <div class="card">
         <h1>Connect IMAP Mailbox</h1>
 
+        @php($authMode = $installation->config_json['auth_mode'] ?? 'basic')
+
+        @if ($authMode === 'xoauth2_client_credentials')
+        {{-- Microsoft 365 app-only (client-credentials): the operator only
+             supplies the client secret here; tenant ID, client ID and the
+             mailbox come from config_json (set via the host settings). --}}
+        <form method="POST" action="{{ $storeRoute }}">
+            @csrf
+            <input type="hidden" name="state" value="{{ $state }}">
+
+            <label for="username">Mailbox</label>
+            <input
+                type="email"
+                id="username"
+                name="username"
+                value="{{ old('username', $installation->config_json['connection']['username'] ?? '') }}"
+                readonly
+                autocomplete="username"
+            >
+
+            <label for="ms_tenant_id">Directory (tenant) ID</label>
+            <input type="text" id="ms_tenant_id" value="{{ $installation->config_json['ms_tenant_id'] ?? '' }}" readonly>
+
+            <label for="ms_client_id">Application (client) ID</label>
+            <input type="text" id="ms_client_id" value="{{ $installation->config_json['ms_client_id'] ?? '' }}" readonly>
+
+            <label for="ms_client_secret">Client Secret</label>
+            <input
+                type="password"
+                id="ms_client_secret"
+                name="ms_client_secret"
+                placeholder="Paste the Entra client-secret value"
+                required
+                autocomplete="off"
+            >
+            <p class="hint">The secret is verified with a live app-only login before it is stored, then encrypted at rest.</p>
+
+            <button type="submit">Save &amp; Connect</button>
+        </form>
+        @else
         <form method="POST" action="{{ $storeRoute }}">
             @csrf
             {{-- Connector state token — required by handleOAuthCallback --}}
@@ -135,6 +175,7 @@
 
             <button type="submit">Save &amp; Connect</button>
         </form>
+        @endif
     </div>
 </body>
 </html>

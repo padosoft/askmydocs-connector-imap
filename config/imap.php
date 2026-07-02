@@ -25,6 +25,36 @@ return [
             'revoke_url' => null,
         ],
     ],
+
+    // App-only (OAuth2 client-credentials) providers. Unlike the delegated
+    // xoauth2 flow above — where a user interactively signs in and consents —
+    // these credentials are PER-INSTALLATION: each customer supplies their own
+    // Entra tenant + app registration (Directory/tenant ID, client ID, client
+    // secret) and the mailbox to read. Those per-install values live in the
+    // installation's config_json + the encrypted vault, NOT in host env. This
+    // block only holds the fixed provider-level endpoint template + scope.
+    //
+    // Sysadmin setup for the mailbox owner (Exchange Online):
+    //   1. Enable IMAP on the mailbox.
+    //   2. Register an app in Microsoft Entra ID.
+    //   3. Add the Office 365 Exchange Online APPLICATION permission
+    //      IMAP.AccessAsApp and grant tenant admin consent.
+    //   4. Register the app's service principal in Exchange:
+    //      New-ServicePrincipal -AppId <clientId> -ObjectId <enterpriseAppObjectId>
+    //   5. Scope it to the mailbox:
+    //      Add-MailboxPermission -Identity <mailbox> -User <servicePrincipalId> -AccessRights FullAccess
+    //      (or restrict via New-ApplicationAccessPolicy).
+    //   6. Hand over: Tenant ID, Client ID, Client Secret, mailbox email.
+    'client_credentials' => [
+        'microsoft' => [
+            // {tenant} is replaced with config_json.ms_tenant_id at runtime.
+            'token_url_template' => 'https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token',
+            'scope' => 'https://outlook.office365.com/.default',
+            'imap_host' => 'outlook.office365.com',
+            'imap_port' => 993,
+            'imap_encryption' => 'ssl',
+        ],
+    ],
     'routes' => [
         'enabled' => env('CONNECTOR_IMAP_ROUTES_ENABLED', false),
         'prefix' => 'admin/connectors/imap',
