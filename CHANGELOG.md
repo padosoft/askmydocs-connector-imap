@@ -34,9 +34,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This pr
   - `refreshTokenIfExpired()` re-mints a fresh app-only token from the stored
     secret when the current one expires (emits a `token_refreshed` audit event).
   - `makeClient()` feeds the fresh bearer token to `webklex/php-imap`
-    (`authentication = 'oauth'`) and defaults the Exchange Online host / port /
-    encryption (`outlook.office365.com` / 993 / ssl), so the operator only
-    supplies tenant/client/secret + mailbox.
+    (`authentication = 'oauth'`) and **forces** the Exchange Online host / port /
+    encryption (`outlook.office365.com` / 993 / ssl) — overwriting any value in
+    `config_json.connection` — so the operator only supplies tenant/client/secret
+    + mailbox, and a stale host from a prior basic-auth config can never receive
+    a Microsoft bearer token (token-leak guard).
+  - Token-endpoint failures surface Microsoft's `error` / `error_description`
+    (first line, secret-free) for fast diagnosis; a rejected login rethrows the
+    actionable `New-ServicePrincipal` / mailbox-permission checklist even when
+    `webklex` raised the auth failure inside `ping()`.
   - `disconnect()` clears credentials locally (Microsoft exposes no
     client-credentials revoke endpoint).
   - New `config/imap.php` block `client_credentials.microsoft`

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Padosoft\AskMyDocsConnectorImap;
 
 use Carbon\Carbon;
+use Illuminate\Http\Client\Response;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -382,13 +383,15 @@ class ImapConnector extends BaseConnector implements SupportsConnectionSettings,
             throw new ConnectorAuthException('IMAP credential callback: invalid or expired state.');
         }
 
-        if ($this->authMode($installationId) === 'xoauth2') {
+        $mode = $this->authMode($installationId);
+
+        if ($mode === 'xoauth2') {
             $this->handleXoauthCallback($installationId, $request);
 
             return;
         }
 
-        if ($this->authMode($installationId) === self::AUTH_CLIENT_CREDENTIALS) {
+        if ($mode === self::AUTH_CLIENT_CREDENTIALS) {
             $this->handleClientCredentialsCallback($installationId, $request);
 
             return;
@@ -749,11 +752,14 @@ class ImapConnector extends BaseConnector implements SupportsConnectionSettings,
         $authMode = (string) ($config['auth_mode'] ?? 'basic');
         $connection = (array) ($config['connection'] ?? []);
 
-        // App-only M365 always talks to Exchange Online — fill the fixed host /
-        // port / encryption so the operator never has to (they only supply the
-        // tenant/client/secret + mailbox).
+        // App-only M365 always talks to Exchange Online — FORCE the fixed host /
+        // port / encryption. This is a security boundary, not a convenience: a
+        // stale host left over from a prior basic-auth config (the app-only
+        // schema hides the host field, so the operator can't see it) would
+        // otherwise receive a freshly-minted Microsoft bearer token — a token
+        // leak to a non-Microsoft server.
         if ($authMode === self::AUTH_CLIENT_CREDENTIALS) {
-            $connection = $this->applyMicrosoftConnectionDefaults($connection);
+            $connection = $this->forceMicrosoftConnection($connection);
         }
 
         return $this->factory->make($connection, $secret, $authMode);
@@ -770,22 +776,21 @@ class ImapConnector extends BaseConnector implements SupportsConnectionSettings,
     }
 
     /**
+     * Force the Exchange Online endpoint for app-only (client-credentials) auth.
+     * The host/port/encryption are overwritten unconditionally — see the
+     * security note in {@see makeClientWithPassword()}. Only the mailbox
+     * (`username`) and any unrelated keys are preserved from config_json.
+     *
      * @param  array<string,mixed>  $connection
      * @return array<string,mixed>
      */
-    private function applyMicrosoftConnectionDefaults(array $connection): array
+    private function forceMicrosoftConnection(array $connection): array
     {
         $cfg = (array) config('connectors.providers.imap.client_credentials.microsoft', []);
 
-        if ((string) ($connection['host'] ?? '') === '') {
-            $connection['host'] = (string) ($cfg['imap_host'] ?? 'outlook.office365.com');
-        }
-        if ((int) ($connection['port'] ?? 0) <= 0) {
-            $connection['port'] = (int) ($cfg['imap_port'] ?? 993);
-        }
-        if ((string) ($connection['encryption'] ?? '') === '') {
-            $connection['encryption'] = (string) ($cfg['imap_encryption'] ?? 'ssl');
-        }
+        $connection['host'] = (string) ($cfg['imap_host'] ?? 'outlook.office365.com');
+        $connection['port'] = (int) ($cfg['imap_port'] ?? 993);
+        $connection['encryption'] = (string) ($cfg['imap_encryption'] ?? 'ssl');
 
         return $connection;
     }
@@ -879,16 +884,20 @@ class ImapConnector extends BaseConnector implements SupportsConnectionSettings,
 
         $client = $this->makeClientWithPassword($installationId, $token['access_token']);
         try {
-            if (! $client->ping()) {
-                throw new ConnectorAuthException(
-                    'Microsoft 365 app-only login failed. Verify: IMAP enabled on the mailbox, '
-                    .'IMAP.AccessAsApp application permission with admin consent, the Exchange '
-                    .'service principal (New-ServicePrincipal), and mailbox access '
-                    .'(Add-MailboxPermission / ApplicationAccessPolicy).'
-                );
-            }
+            // ping() throws ConnectorAuthException on a rejected login (webklex
+            // wraps AuthFailedException) and only returns false in edge cases, so
+            // BOTH the throw and the false path must yield the actionable
+            // checklist — otherwise the generic "IMAP authentication failed"
+            // masks the real cause (usually a missing New-ServicePrincipal).
+            $ok = $client->ping();
+        } catch (ConnectorAuthException $e) {
+            throw new ConnectorAuthException($this->appOnlyLoginFailureMessage(), previous: $e);
         } finally {
             $client->close();
+        }
+
+        if (! $ok) {
+            throw new ConnectorAuthException($this->appOnlyLoginFailureMessage());
         }
 
         $this->vault->setCredentials(
@@ -940,6 +949,45 @@ class ImapConnector extends BaseConnector implements SupportsConnectionSettings,
     }
 
     /**
+     * The actionable checklist surfaced whenever an app-only login is rejected —
+     * a token Entra issued but Exchange refused almost always means a missing
+     * `New-ServicePrincipal` or mailbox permission, not a bad secret.
+     */
+    private function appOnlyLoginFailureMessage(): string
+    {
+        return 'Microsoft 365 app-only login failed. Verify: IMAP enabled on the mailbox, '
+            .'IMAP.AccessAsApp application permission with admin consent, the Exchange '
+            .'service principal (New-ServicePrincipal), and mailbox access '
+            .'(Add-MailboxPermission / ApplicationAccessPolicy).';
+    }
+
+    /**
+     * Extract Microsoft's `error` / `error_description` from a failed token
+     * response as a short parenthesised suffix. Returns '' when the body is not
+     * JSON or carries neither field. Never contains the client secret.
+     */
+    private function tokenErrorDetail(Response $resp): string
+    {
+        $body = (array) $resp->json();
+        $error = is_string($body['error'] ?? null) ? trim($body['error']) : '';
+        $description = is_string($body['error_description'] ?? null) ? trim($body['error_description']) : '';
+
+        if ($error === '' && $description === '') {
+            return '';
+        }
+
+        // error_description is often multi-line (AADSTS code + trace ids) — keep
+        // only the first line to stay log-friendly.
+        $firstLine = $description !== '' ? (string) strtok($description, "\r\n") : '';
+        $suffix = $error;
+        if ($firstLine !== '') {
+            $suffix = $suffix !== '' ? $suffix.': '.$firstLine : $firstLine;
+        }
+
+        return ' ('.$suffix.')';
+    }
+
+    /**
      * OAuth2 client-credentials grant against the tenant-specific Microsoft
      * identity endpoint, scope `https://outlook.office365.com/.default`.
      *
@@ -961,15 +1009,20 @@ class ImapConnector extends BaseConnector implements SupportsConnectionSettings,
 
         if (! $resp->successful()) {
             $status = $resp->status();
+            // Microsoft returns a JSON { error, error_description } that names the
+            // real cause (invalid_client / invalid_scope / unauthorized_client);
+            // it never echoes the client secret, so it is safe to surface and
+            // makes troubleshooting far faster.
+            $detail = $this->tokenErrorDetail($resp);
             // R42 — a rate-limit (429) or upstream outage (5xx) is transient:
             // raise a retryable ConnectorApiException so the sync job backs off
             // and retries instead of flagging the credentials as permanently bad.
             // A 4xx (invalid_client / unauthorized_client) is a real auth failure
             // that a retry cannot fix → ConnectorAuthException stops the retries.
             if ($status === 429 || $status >= 500) {
-                throw new ConnectorApiException('Microsoft 365 client-credentials token request failed (transient): HTTP '.$status);
+                throw new ConnectorApiException('Microsoft 365 client-credentials token request failed (transient): HTTP '.$status.$detail);
             }
-            throw new ConnectorAuthException('Microsoft 365 client-credentials token request failed: HTTP '.$status);
+            throw new ConnectorAuthException('Microsoft 365 client-credentials token request failed: HTTP '.$status.$detail);
         }
 
         $payload = (array) $resp->json();

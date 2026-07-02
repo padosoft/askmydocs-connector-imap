@@ -15,6 +15,8 @@ use Padosoft\AskMyDocsConnectorBase\Models\ConnectorCredential;
 use Padosoft\AskMyDocsConnectorBase\Models\ConnectorInstallation;
 use Padosoft\AskMyDocsConnectorImap\Imap\ImapClientFactoryInterface;
 use Padosoft\AskMyDocsConnectorImap\Imap\ImapClientInterface;
+use Padosoft\AskMyDocsConnectorImap\Imap\ImapMessage;
+use Padosoft\AskMyDocsConnectorImap\Imap\MailboxState;
 use Padosoft\AskMyDocsConnectorImap\ImapConnector;
 use Padosoft\AskMyDocsConnectorImap\Tests\Support\FakeImapClient;
 use Padosoft\AskMyDocsConnectorImap\Tests\TestCase;
@@ -237,10 +239,13 @@ final class ImapClientCredentialsTest extends TestCase
         $this->assertSame('ssl', $this->lastFactoryCall['connection']['encryption']);
     }
 
-    public function test_callback_throws_when_token_endpoint_rejects(): void
+    public function test_callback_throws_with_microsoft_error_detail_when_token_endpoint_rejects(): void
     {
         Http::fake([
-            'https://login.microsoftonline.com/*' => Http::response(['error' => 'invalid_client'], 401),
+            'https://login.microsoftonline.com/*' => Http::response([
+                'error' => 'invalid_client',
+                'error_description' => "AADSTS7000215: Invalid client secret provided.\r\nTrace ID: abc-123",
+            ], 401),
         ]);
 
         $connector = $this->app->make(ImapConnector::class);
@@ -254,8 +259,118 @@ final class ImapClientCredentialsTest extends TestCase
             'ms_client_secret' => 'bad-secret',
         ]);
 
-        $this->expectException(ConnectorAuthException::class);
-        $connector->handleOAuthCallback($inst->id, $req);
+        try {
+            $connector->handleOAuthCallback($inst->id, $req);
+            $this->fail('Expected ConnectorAuthException.');
+        } catch (ConnectorAuthException $e) {
+            // Microsoft's error + first line of error_description is surfaced…
+            $this->assertStringContainsString('invalid_client', $e->getMessage());
+            $this->assertStringContainsString('Invalid client secret provided.', $e->getMessage());
+            // …but not the noisy trailing trace lines, and never the secret.
+            $this->assertStringNotContainsString('Trace ID', $e->getMessage());
+            $this->assertStringNotContainsString('bad-secret', $e->getMessage());
+        }
+    }
+
+    public function test_app_only_forces_exchange_host_over_a_stale_config(): void
+    {
+        $this->fakeTokenEndpoint(accessToken: 'live-token');
+
+        $connector = $this->app->make(ImapConnector::class);
+        // An installation switched from basic-auth carries a stale, non-Microsoft
+        // host that the app-only schema hides from the operator.
+        $inst = $this->installation(['connection' => [
+            'username' => 'shared-mailbox@contoso.com',
+            'host' => 'imap.attacker.example.com',
+            'port' => 143,
+            'encryption' => 'starttls',
+        ]]);
+
+        /** @var OAuthCredentialVault $vault */
+        $vault = $this->app->make(OAuthCredentialVault::class);
+        $vault->setCredentials(
+            $inst->id,
+            accessToken: 'stale-token',
+            refreshToken: 'stored-client-secret',
+            expiresAt: Carbon::now()->subMinute(),
+            extra: ['auth_mode' => 'xoauth2_client_credentials', 'provider' => 'microsoft'],
+        );
+
+        $connector->health($inst->id);
+
+        // The freshly-minted Microsoft bearer token must NEVER be sent to the
+        // stale host — the Exchange endpoint is forced, not merely defaulted.
+        $this->assertNotNull($this->lastFactoryCall);
+        $this->assertSame('outlook.office365.com', $this->lastFactoryCall['connection']['host']);
+        $this->assertSame(993, $this->lastFactoryCall['connection']['port']);
+        $this->assertSame('ssl', $this->lastFactoryCall['connection']['encryption']);
+        $this->assertSame('live-token', $this->lastFactoryCall['secret']);
+    }
+
+    public function test_app_only_login_rejection_surfaces_actionable_checklist(): void
+    {
+        $this->fakeTokenEndpoint();
+
+        // A factory whose client rejects the login the way webklex does — ping()
+        // throws ConnectorAuthException rather than returning false.
+        $this->app->bind(
+            ImapClientFactoryInterface::class,
+            fn () => new class implements ImapClientFactoryInterface
+            {
+                public function make(array $connection, string $secret, string $authMode): ImapClientInterface
+                {
+                    return new class implements ImapClientInterface
+                    {
+                        public function listMailboxes(): array
+                        {
+                            return [];
+                        }
+
+                        public function selectMailbox(string $name): MailboxState
+                        {
+                            throw new \RuntimeException('n/a');
+                        }
+
+                        public function searchUids(string $mailbox, ?Carbon $since, ?int $sinceUid): array
+                        {
+                            return [];
+                        }
+
+                        public function fetchMessage(string $mailbox, int $uid): ImapMessage
+                        {
+                            throw new \RuntimeException('n/a');
+                        }
+
+                        public function ping(): bool
+                        {
+                            throw new ConnectorAuthException('IMAP authentication failed: rejected');
+                        }
+
+                        public function close(): void {}
+                    };
+                }
+            }
+        );
+
+        $connector = $this->app->make(ImapConnector::class);
+        $inst = $this->installation();
+
+        $url = $connector->initiateOAuth($inst->id);
+        parse_str((string) parse_url($url, PHP_URL_QUERY), $q);
+
+        $req = Request::create('/credentials', 'POST', [
+            'state' => (string) ($q['state'] ?? ''),
+            'ms_client_secret' => 'a-secret',
+        ]);
+
+        try {
+            $connector->handleOAuthCallback($inst->id, $req);
+            $this->fail('Expected ConnectorAuthException.');
+        } catch (ConnectorAuthException $e) {
+            $this->assertStringContainsString('New-ServicePrincipal', $e->getMessage());
+            // The original webklex auth error is preserved as the cause.
+            $this->assertInstanceOf(ConnectorAuthException::class, $e->getPrevious());
+        }
     }
 
     /**
