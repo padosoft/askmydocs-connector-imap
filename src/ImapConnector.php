@@ -16,6 +16,7 @@ use Padosoft\AskMyDocsConnectorBase\Contracts\ConnectorIngestionContract;
 use Padosoft\AskMyDocsConnectorBase\Contracts\SupportsConnectionSettings;
 use Padosoft\AskMyDocsConnectorBase\Contracts\SupportsCredentialForm;
 use Padosoft\AskMyDocsConnectorBase\Contracts\SupportsFolderDiscovery;
+use Padosoft\AskMyDocsConnectorBase\Exceptions\ConnectorApiException;
 use Padosoft\AskMyDocsConnectorBase\Exceptions\ConnectorAuthException;
 use Padosoft\AskMyDocsConnectorBase\Exceptions\ConnectorPaginationLimitException;
 use Padosoft\AskMyDocsConnectorBase\HealthStatus;
@@ -34,6 +35,13 @@ use Padosoft\AskMyDocsConnectorImap\Support\MailMetadata;
 
 class ImapConnector extends BaseConnector implements SupportsConnectionSettings, SupportsCredentialForm, SupportsFolderDiscovery
 {
+    /**
+     * Microsoft 365 app-only (OAuth2 client-credentials) auth mode. Unlike the
+     * delegated 'xoauth2' flow, there is no user sign-in, no redirect, and no
+     * refresh token: the client secret is re-used to mint fresh access tokens.
+     */
+    private const AUTH_CLIENT_CREDENTIALS = 'xoauth2_client_credentials';
+
     public function __construct(
         OAuthCredentialVault $vault,
         TenantContext $tenantContext,
@@ -68,6 +76,7 @@ class ImapConnector extends BaseConnector implements SupportsConnectionSettings,
     {
         $basicOnly = ['field' => 'auth_mode', 'equals' => 'basic'];
         $xoauthOnly = ['field' => 'auth_mode', 'equals' => 'xoauth2'];
+        $clientCredsOnly = ['field' => 'auth_mode', 'equals' => self::AUTH_CLIENT_CREDENTIALS];
 
         $fields = [
             new CredentialField(
@@ -77,7 +86,11 @@ class ImapConnector extends BaseConnector implements SupportsConnectionSettings,
                 target: 'auth_mode',
                 required: true,
                 default: 'basic',
-                options: ['basic' => 'Password / App password', 'xoauth2' => 'OAuth2 (Gmail / Microsoft 365)'],
+                options: [
+                    'basic' => 'Password / App password',
+                    'xoauth2' => 'OAuth2 — delegated (Gmail / Microsoft 365, user sign-in)',
+                    self::AUTH_CLIENT_CREDENTIALS => 'OAuth2 — Microsoft 365 app-only (client credentials)',
+                ],
                 group: 'Authentication',
             ),
             new CredentialField(
@@ -89,6 +102,41 @@ class ImapConnector extends BaseConnector implements SupportsConnectionSettings,
                 options: ['google' => 'Gmail', 'microsoft' => 'Microsoft 365'],
                 showIf: $xoauthOnly,
                 group: 'Authentication',
+            ),
+            // Microsoft 365 app-only (client-credentials) fields. Each customer
+            // supplies their own Entra tenant + app registration, so these are
+            // per-installation values — tenant/client land in config_json, the
+            // secret is routed to the vault (never config_json).
+            new CredentialField(
+                name: 'ms_tenant_id',
+                label: 'Microsoft Directory (tenant) ID',
+                type: 'text',
+                target: 'config',
+                required: true,
+                showIf: $clientCredsOnly,
+                help: 'Entra "Directory (tenant) ID" — a GUID. Builds the token endpoint.',
+                group: 'Authentication',
+            ),
+            new CredentialField(
+                name: 'ms_client_id',
+                label: 'Microsoft Application (client) ID',
+                type: 'text',
+                target: 'config',
+                required: true,
+                showIf: $clientCredsOnly,
+                help: 'Entra App registration "Application (client) ID" — a GUID.',
+                group: 'Authentication',
+            ),
+            new CredentialField(
+                name: 'ms_client_secret',
+                label: 'Microsoft Client Secret',
+                type: 'password',
+                target: 'secret',
+                required: true,
+                secret: true,
+                showIf: $clientCredsOnly,
+                help: 'The client-secret VALUE from Entra → Certificates & secrets.',
+                group: 'Credentials',
             ),
             new CredentialField(
                 name: 'host',
@@ -336,6 +384,12 @@ class ImapConnector extends BaseConnector implements SupportsConnectionSettings,
 
         if ($this->authMode($installationId) === 'xoauth2') {
             $this->handleXoauthCallback($installationId, $request);
+
+            return;
+        }
+
+        if ($this->authMode($installationId) === self::AUTH_CLIENT_CREDENTIALS) {
+            $this->handleClientCredentialsCallback($installationId, $request);
 
             return;
         }
@@ -625,7 +679,9 @@ class ImapConnector extends BaseConnector implements SupportsConnectionSettings,
 
     public function refreshTokenIfExpired(int $installationId): ?string
     {
-        if ($this->authMode($installationId) !== 'xoauth2') {
+        $mode = $this->authMode($installationId);
+
+        if (! $this->isXoauthMode($mode)) {
             // Basic-auth: password stored as accessToken, never expires.
             return $this->vault->getAccessToken($installationId);
         }
@@ -633,6 +689,10 @@ class ImapConnector extends BaseConnector implements SupportsConnectionSettings,
         $access = $this->vault->getAccessToken($installationId);
         if ($access !== null) {
             return $access; // Still valid.
+        }
+
+        if ($mode === self::AUTH_CLIENT_CREDENTIALS) {
+            return $this->refreshClientCredentialsToken($installationId);
         }
 
         $refresh = $this->vault->getRefreshToken($installationId);
@@ -676,7 +736,7 @@ class ImapConnector extends BaseConnector implements SupportsConnectionSettings,
 
     protected function makeClient(int $installationId): ImapClientInterface
     {
-        $secret = $this->authMode($installationId) === 'xoauth2'
+        $secret = $this->isXoauthMode($this->authMode($installationId))
             ? (string) ($this->refreshTokenIfExpired($installationId) ?? '')
             : (string) ($this->vault->getAccessToken($installationId) ?? '');
 
@@ -686,9 +746,48 @@ class ImapConnector extends BaseConnector implements SupportsConnectionSettings,
     protected function makeClientWithPassword(int $installationId, string $secret): ImapClientInterface
     {
         $config = (array) ($this->loadInstallation($installationId)->config_json ?? []);
+        $authMode = (string) ($config['auth_mode'] ?? 'basic');
         $connection = (array) ($config['connection'] ?? []);
 
-        return $this->factory->make($connection, $secret, (string) ($config['auth_mode'] ?? 'basic'));
+        // App-only M365 always talks to Exchange Online — fill the fixed host /
+        // port / encryption so the operator never has to (they only supply the
+        // tenant/client/secret + mailbox).
+        if ($authMode === self::AUTH_CLIENT_CREDENTIALS) {
+            $connection = $this->applyMicrosoftConnectionDefaults($connection);
+        }
+
+        return $this->factory->make($connection, $secret, $authMode);
+    }
+
+    /**
+     * True for every OAuth2 SASL-XOAUTH2 mode (delegated + app-only) — the modes
+     * whose IMAP secret is a bearer access token that may need refreshing,
+     * as opposed to a static basic-auth password.
+     */
+    private function isXoauthMode(string $mode): bool
+    {
+        return $mode === 'xoauth2' || $mode === self::AUTH_CLIENT_CREDENTIALS;
+    }
+
+    /**
+     * @param  array<string,mixed>  $connection
+     * @return array<string,mixed>
+     */
+    private function applyMicrosoftConnectionDefaults(array $connection): array
+    {
+        $cfg = (array) config('connectors.providers.imap.client_credentials.microsoft', []);
+
+        if ((string) ($connection['host'] ?? '') === '') {
+            $connection['host'] = (string) ($cfg['imap_host'] ?? 'outlook.office365.com');
+        }
+        if ((int) ($connection['port'] ?? 0) <= 0) {
+            $connection['port'] = (int) ($cfg['imap_port'] ?? 993);
+        }
+        if ((string) ($connection['encryption'] ?? '') === '') {
+            $connection['encryption'] = (string) ($cfg['imap_encryption'] ?? 'ssl');
+        }
+
+        return $connection;
     }
 
     private function xoauthAuthorizeUrl(int $installationId, string $state): string
@@ -750,6 +849,141 @@ class ImapConnector extends BaseConnector implements SupportsConnectionSettings,
             'auth_mode' => 'xoauth2',
             'provider' => $provider,
         ]);
+    }
+
+    /**
+     * Microsoft 365 app-only (client-credentials) install: fetch an app-only
+     * access token, prove it logs in via SASL XOAUTH2, then persist. The client
+     * secret is stored as the vault's refresh material (encrypted) — NOT in
+     * config_json, which is plaintext — because it is the long-lived credential
+     * re-used to mint fresh access tokens (there is no refresh token in this flow).
+     */
+    private function handleClientCredentialsCallback(int $installationId, Request $request): void
+    {
+        $clientSecret = (string) $request->input('ms_client_secret', '');
+        if ($clientSecret === '') {
+            throw new ConnectorAuthException('Microsoft 365 app-only callback: missing client secret.');
+        }
+
+        $config = (array) ($this->loadInstallation($installationId)->config_json ?? []);
+        $tenantId = (string) ($config['ms_tenant_id'] ?? '');
+        $clientId = (string) ($config['ms_client_id'] ?? '');
+        if ($tenantId === '' || $clientId === '') {
+            throw new ConnectorAuthException('Microsoft 365 app-only callback: ms_tenant_id and ms_client_id are required.');
+        }
+
+        // Mint an app-only token and verify it actually authenticates before we
+        // store anything — a token that Entra issues but Exchange rejects means
+        // the New-ServicePrincipal / Add-MailboxPermission steps are missing.
+        $token = $this->fetchClientCredentialsToken($tenantId, $clientId, $clientSecret);
+
+        $client = $this->makeClientWithPassword($installationId, $token['access_token']);
+        try {
+            if (! $client->ping()) {
+                throw new ConnectorAuthException(
+                    'Microsoft 365 app-only login failed. Verify: IMAP enabled on the mailbox, '
+                    .'IMAP.AccessAsApp application permission with admin consent, the Exchange '
+                    .'service principal (New-ServicePrincipal), and mailbox access '
+                    .'(Add-MailboxPermission / ApplicationAccessPolicy).'
+                );
+            }
+        } finally {
+            $client->close();
+        }
+
+        $this->vault->setCredentials(
+            $installationId,
+            accessToken: $token['access_token'],
+            refreshToken: $clientSecret,
+            expiresAt: $token['expires_at'],
+            extra: ['auth_mode' => self::AUTH_CLIENT_CREDENTIALS, 'provider' => 'microsoft'],
+        );
+
+        $this->emitAudit('installed', installationId: $installationId, metadata: [
+            'auth_mode' => self::AUTH_CLIENT_CREDENTIALS,
+            'provider' => 'microsoft',
+        ]);
+    }
+
+    /**
+     * Re-mint an app-only access token from the stored client secret when the
+     * current one has expired. No refresh token exists in the client-credentials
+     * flow — the secret itself is the durable material.
+     */
+    private function refreshClientCredentialsToken(int $installationId): ?string
+    {
+        $clientSecret = $this->vault->getRefreshToken($installationId);
+        if ($clientSecret === null) {
+            return null;
+        }
+
+        $config = (array) ($this->loadInstallation($installationId)->config_json ?? []);
+        $tenantId = (string) ($config['ms_tenant_id'] ?? '');
+        $clientId = (string) ($config['ms_client_id'] ?? '');
+        if ($tenantId === '' || $clientId === '') {
+            return null;
+        }
+
+        $token = $this->fetchClientCredentialsToken($tenantId, $clientId, $clientSecret);
+
+        $this->vault->setCredentials(
+            $installationId,
+            accessToken: $token['access_token'],
+            refreshToken: $clientSecret,
+            expiresAt: $token['expires_at'],
+            extra: $this->vault->getExtra($installationId),
+        );
+
+        $this->emitAudit('token_refreshed', installationId: $installationId);
+
+        return $token['access_token'];
+    }
+
+    /**
+     * OAuth2 client-credentials grant against the tenant-specific Microsoft
+     * identity endpoint, scope `https://outlook.office365.com/.default`.
+     *
+     * @return array{access_token: string, expires_at: ?Carbon}
+     */
+    private function fetchClientCredentialsToken(string $tenantId, string $clientId, string $clientSecret): array
+    {
+        $cfg = (array) config('connectors.providers.imap.client_credentials.microsoft', []);
+        $template = (string) ($cfg['token_url_template'] ?? 'https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token');
+        $scope = (string) ($cfg['scope'] ?? 'https://outlook.office365.com/.default');
+        $tokenUrl = str_replace('{tenant}', rawurlencode($tenantId), $template);
+
+        $resp = Http::asForm()->acceptJson()->post($tokenUrl, [
+            'client_id' => $clientId,
+            'client_secret' => $clientSecret,
+            'grant_type' => 'client_credentials',
+            'scope' => $scope,
+        ]);
+
+        if (! $resp->successful()) {
+            $status = $resp->status();
+            // R42 — a rate-limit (429) or upstream outage (5xx) is transient:
+            // raise a retryable ConnectorApiException so the sync job backs off
+            // and retries instead of flagging the credentials as permanently bad.
+            // A 4xx (invalid_client / unauthorized_client) is a real auth failure
+            // that a retry cannot fix → ConnectorAuthException stops the retries.
+            if ($status === 429 || $status >= 500) {
+                throw new ConnectorApiException('Microsoft 365 client-credentials token request failed (transient): HTTP '.$status);
+            }
+            throw new ConnectorAuthException('Microsoft 365 client-credentials token request failed: HTTP '.$status);
+        }
+
+        $payload = (array) $resp->json();
+        $access = (string) ($payload['access_token'] ?? '');
+        if ($access === '') {
+            throw new ConnectorAuthException('Microsoft 365 client-credentials token response missing access_token.');
+        }
+
+        return [
+            'access_token' => $access,
+            'expires_at' => isset($payload['expires_in'])
+                ? Carbon::now()->addSeconds((int) $payload['expires_in'])
+                : null,
+        ];
     }
 
     /**

@@ -6,6 +6,55 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This pr
 
 ---
 
+## [1.5.0] — 2026-07-02
+
+### Added
+
+- **Microsoft 365 app-only IMAP (OAuth2 client-credentials).** A third
+  `auth_mode`, `xoauth2_client_credentials`, authenticates to Exchange Online
+  **without any interactive user sign-in** — the unattended, admin-consented
+  service-principal flow behind the `IMAP.AccessAsApp` application permission.
+  This is distinct from the existing delegated `xoauth2` mode (which requires a
+  human to sign into the mailbox and consent). Credentials are **per
+  installation** — each customer supplies their own Entra **Directory (tenant)
+  ID**, **Application (client) ID**, **Client Secret** and the **mailbox** to
+  read:
+  - `credentialFormSchema()` gains the `xoauth2_client_credentials` auth-mode
+    option plus three fields shown only for it: `ms_tenant_id` (→ config_json),
+    `ms_client_id` (→ config_json) and `ms_client_secret` (secret → vault, never
+    config_json).
+  - `handleOAuthCallback()` gains a client-credentials branch: it mints an
+    app-only access token via the OAuth2 `client_credentials` grant against the
+    tenant-specific endpoint `https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token`
+    with scope `https://outlook.office365.com/.default`, verifies it with a live
+    SASL-XOAUTH2 `ping()`, then persists the access token + expiry. The **client
+    secret is stored as the vault's (encrypted) refresh material** — it is the
+    durable credential re-used to mint new access tokens, since the
+    client-credentials flow returns no refresh token.
+  - `refreshTokenIfExpired()` re-mints a fresh app-only token from the stored
+    secret when the current one expires (emits a `token_refreshed` audit event).
+  - `makeClient()` feeds the fresh bearer token to `webklex/php-imap`
+    (`authentication = 'oauth'`) and defaults the Exchange Online host / port /
+    encryption (`outlook.office365.com` / 993 / ssl), so the operator only
+    supplies tenant/client/secret + mailbox.
+  - `disconnect()` clears credentials locally (Microsoft exposes no
+    client-credentials revoke endpoint).
+  - New `config/imap.php` block `client_credentials.microsoft`
+    (`token_url_template`, `scope`, `imap_host`/`imap_port`/`imap_encryption`),
+    including the exact Exchange Online PowerShell sysadmin setup
+    (`New-ServicePrincipal` + `Add-MailboxPermission`) in comments.
+  - `ImapClientCredentialsTest` feature coverage: schema exposure, token
+    mint + secret-as-refresh storage, tenant-specific `client_credentials` grant
+    with `.default` scope, silent re-mint on expiry, fixed-host client build,
+    token-endpoint rejection → `ConnectorAuthException`, missing tenant/client
+    guard, and revoke-less disconnect.
+
+### Compatibility
+
+- Fully backward compatible and additive. `basic` and the delegated `xoauth2`
+  flow are unchanged; hosts that never select the new auth mode see identical
+  behaviour. No new `connector-base` version is required (`^1.4`).
+
 ## [1.4.2] — 2026-06-25
 
 ### Added
