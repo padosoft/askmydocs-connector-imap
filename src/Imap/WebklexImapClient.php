@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Padosoft\AskMyDocsConnectorImap\Imap;
 
 use Carbon\Carbon;
+use Illuminate\Support\Str;
 use Padosoft\AskMyDocsConnectorBase\Exceptions\ConnectorApiException;
 use Padosoft\AskMyDocsConnectorBase\Exceptions\ConnectorAuthException;
 use Webklex\PHPIMAP\Address;
@@ -12,6 +13,7 @@ use Webklex\PHPIMAP\Attachment;
 use Webklex\PHPIMAP\Attribute;
 use Webklex\PHPIMAP\Client;
 use Webklex\PHPIMAP\Exceptions\AuthFailedException;
+use Webklex\PHPIMAP\Exceptions\ResponseException;
 use Webklex\PHPIMAP\Message;
 
 final class WebklexImapClient implements ImapClientInterface
@@ -35,6 +37,20 @@ final class WebklexImapClient implements ImapClientInterface
                 // the sync job stops retrying and SupportsFolderDiscovery surfaces
                 // the right error instead of a misleading 503.
                 throw new ConnectorAuthException('IMAP authentication failed: '.$e->getMessage(), previous: $e);
+            } catch (ResponseException $e) {
+                // webklex only throws AuthFailedException when the AUTHENTICATE/LOGIN
+                // response validates but carries no data. The far more common real
+                // rejection — the server answering `NO`/`BAD` to the auth exchange
+                // (e.g. Exchange Online app-only: "NO AUTHENTICATE failed") — surfaces
+                // as a ResponseException out of Client::authenticate()->validatedData(),
+                // which the AuthFailedException catch above never sees. Classify a
+                // rejected auth exchange as a permanent AUTH failure too, so the host
+                // re-prompts and the sync job stops retrying; a non-auth handshake
+                // fault stays a transient API error.
+                if (Str::contains($e->getMessage(), ['authenticate', 'authentication', 'credential', 'login failed'], ignoreCase: true)) {
+                    throw new ConnectorAuthException('IMAP authentication failed: '.$e->getMessage(), previous: $e);
+                }
+                throw new ConnectorApiException('IMAP connect failed: '.$e->getMessage(), previous: $e);
             } catch (\Throwable $e) {
                 throw new ConnectorApiException('IMAP connect failed: '.$e->getMessage(), previous: $e);
             }
