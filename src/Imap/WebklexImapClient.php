@@ -62,7 +62,14 @@ final class WebklexImapClient implements ImapClientInterface
         $this->ensure();
         $names = [];
         foreach ($this->client->getFolders(false) as $folder) {
-            $names[] = $folder->path;
+            // Use the DECODED UTF-8 name, not $folder->path (raw modified
+            // UTF-7 / RFC 3501, e.g. "Attivit&AOA-"). getFolder() expects
+            // UTF-8: getFolderByName() matches the decoded ->name, and
+            // getFolderByPath() re-encodes UTF-8→UTF7-IMAP itself. Feeding it
+            // the already-encoded path double-encodes and the folder is never
+            // found — every non-ASCII mailbox (e.g. Exchange "Attività")
+            // would fail with "Mailbox not found" while ASCII (Gmail) worked.
+            $names[] = $folder->full_name;
         }
 
         return $names;
