@@ -6,6 +6,43 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This pr
 
 ---
 
+## [1.5.1] — 2026-07-08
+
+### Fixed
+
+- **A rejected IMAP authentication is no longer mis-classified as a transient
+  error.** When the server answers `NO`/`BAD` to the SASL `AUTHENTICATE` (or
+  `LOGIN`) exchange — the everyday credential-rejection path, e.g. Exchange
+  Online app-only returning `NO AUTHENTICATE failed` — `webklex/php-imap`
+  surfaces it as a `ResponseException` thrown inside
+  `Client::authenticate()->validatedData()`, **not** as an
+  `AuthFailedException` (that class is only thrown when the auth response
+  validates but carries no data). `WebklexImapClient::ensure()` special-cased
+  only `AuthFailedException`, so real rejections fell through to the catch-all
+  `ConnectorApiException` (transient), with two wrong consequences:
+  - the host treated a **permanent** auth failure as retryable and backed off
+    indefinitely instead of prompting re-authentication; and
+  - `handleClientCredentialsCallback()`'s `catch (ConnectorAuthException)`
+    never fired, so the actionable app-only setup checklist promised in 1.5.0
+    (`New-ServicePrincipal` / `Add-MailboxPermission` / `IMAP.AccessAsApp`) was
+    swallowed and the operator saw the raw driver error instead.
+
+  `ensure()` now also catches `ResponseException` at connect and re-maps it to
+  `ConnectorAuthException` when the message marks a rejected auth exchange
+  (`authenticate` / `authentication` / `credential` / `login failed`,
+  case-insensitive); any other handshake fault stays a transient
+  `ConnectorApiException`. This makes the 1.5.0 app-only checklist actually
+  reach the operator and lets the sync job stop retrying a doomed connection.
+  Two new `WebklexImapClientTest` cases lock the taxonomy in (auth-rejection
+  response → auth, non-auth response → api).
+
+### Compatibility
+
+- Bug fix only — no API, config or schema changes, no new `connector-base`
+  version (`^1.4`). Behaviour changes only for connections that were already
+  failing authentication: they now report a permanent auth error (correct)
+  instead of a transient one.
+
 ## [1.5.0] — 2026-07-02
 
 ### Added
