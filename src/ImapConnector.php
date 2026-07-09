@@ -509,15 +509,22 @@ class ImapConnector extends BaseConnector implements SupportsConnectionSettings,
                 $effectiveSince = $since !== null && $window !== null ? $since->max($window) : ($since ?? $window);
                 try {
                     $r = $walker->incrementalUids($mailbox, $mailboxState, $effectiveSince);
+                } catch (ConnectorAuthException $e) {
+                    // Auth failures must abort so the host prompts re-authentication.
+                    throw $e;
                 } catch (\Throwable $e) {
-                    // Transport drop while opening/scanning this folder — Exchange
-                    // Online closes long-lived IMAP sessions and the next command
-                    // (webklex NOOP) hits a dead socket: "fwrite(): SSL: Broken pipe".
-                    // Drop the dead connection so the NEXT folder reconnects fresh,
-                    // record the interruption, and continue instead of aborting the
-                    // whole run. This folder resumes from its last saved UID on the
-                    // next run (state is persisted in the finally below).
-                    $note = sprintf("folder '%s' scan interrupted (%s) — reconnecting for the next folder", $mailbox, $e->getMessage());
+                    // Only tolerate transport-level connection drops during folder scan.
+                    if ($e instanceof \Error) {
+                        throw $e;
+                    }
+
+                    $msg = $e->getMessage();
+                    $isTransportDrop = Str::contains($msg, ['broken pipe', 'connection reset', 'connection closed', 'eof'], ignoreCase: true);
+                    if (! $isTransportDrop) {
+                        throw $e;
+                    }
+
+                    $note = sprintf("folder '%s' scan interrupted (%s) — reconnecting for the next folder", $mailbox, $msg);
                     $errors[] = $note;
                     Log::warning('[connector-imap] '.$note, ['installation_id' => $installationId]);
                     $client->close();
