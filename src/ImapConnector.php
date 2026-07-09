@@ -507,7 +507,23 @@ class ImapConnector extends BaseConnector implements SupportsConnectionSettings,
                 $mailboxState = $full ? [] : (array) ($state[$mailbox] ?? []);
                 $window = $walker->windowSince();
                 $effectiveSince = $since !== null && $window !== null ? $since->max($window) : ($since ?? $window);
-                $r = $walker->incrementalUids($mailbox, $mailboxState, $effectiveSince);
+                try {
+                    $r = $walker->incrementalUids($mailbox, $mailboxState, $effectiveSince);
+                } catch (\Throwable $e) {
+                    // Transport drop while opening/scanning this folder — Exchange
+                    // Online closes long-lived IMAP sessions and the next command
+                    // (webklex NOOP) hits a dead socket: "fwrite(): SSL: Broken pipe".
+                    // Drop the dead connection so the NEXT folder reconnects fresh,
+                    // record the interruption, and continue instead of aborting the
+                    // whole run. This folder resumes from its last saved UID on the
+                    // next run (state is persisted in the finally below).
+                    $note = sprintf("folder '%s' scan interrupted (%s) — reconnecting for the next folder", $mailbox, $e->getMessage());
+                    $errors[] = $note;
+                    Log::warning('[connector-imap] '.$note, ['installation_id' => $installationId]);
+                    $client->close();
+
+                    continue;
+                }
                 $maxUid = (int) ($mailboxState['last_uid'] ?? 0);
 
                 foreach ($r['uids'] as $uid) {
@@ -567,10 +583,14 @@ class ImapConnector extends BaseConnector implements SupportsConnectionSettings,
         } catch (ConnectorPaginationLimitException) {
             $errors[] = sprintf('sync truncated at max_messages_per_sync=%d', $maxMessages);
         } finally {
+            // Persist progress on EVERY exit path — including a mid-sync throw — so the
+            // next run RESUMES from the last processed UID per folder instead of
+            // restarting the backfill. Exchange Online drops long IMAP sessions, and a
+            // lost cursor means a large mailbox could never finish. Saved BEFORE the
+            // close() so a close() hiccup can never skip the checkpoint.
+            $this->vault->setExtraKey($installationId, 'mailboxes_state', $state);
             $client->close();
         }
-
-        $this->vault->setExtraKey($installationId, 'mailboxes_state', $state);
 
         return new SyncResult(
             documentsAdded: $full ? $added : 0,
