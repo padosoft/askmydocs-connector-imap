@@ -595,8 +595,11 @@ class ImapConnector extends BaseConnector implements SupportsConnectionSettings,
             // restarting the backfill. Exchange Online drops long IMAP sessions, and a
             // lost cursor means a large mailbox could never finish. Saved BEFORE the
             // close() so a close() hiccup can never skip the checkpoint.
-            $this->vault->setExtraKey($installationId, 'mailboxes_state', $state);
-            $client->close();
+            try {
+                $this->vault->setExtraKey($installationId, 'mailboxes_state', $state);
+            } finally {
+                $client->close();
+            }
         }
 
         return new SyncResult(
