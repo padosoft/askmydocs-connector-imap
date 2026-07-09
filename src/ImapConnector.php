@@ -504,7 +504,7 @@ class ImapConnector extends BaseConnector implements SupportsConnectionSettings,
             }
 
             foreach ($walker->selectedMailboxes() as $mailbox) {
-                $mailboxState = $full ? [] : (array) ($state[$mailbox] ?? []);
+                $mailboxState = (array) ($state[$mailbox] ?? []);
                 $window = $walker->windowSince();
                 $effectiveSince = $since !== null && $window !== null ? $since->max($window) : ($since ?? $window);
                 try {

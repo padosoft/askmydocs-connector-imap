@@ -177,6 +177,78 @@ final class ImapSyncTest extends TestCase
         $this->assertSame(2, $state['mailboxes_state']['INBOX']['last_uid']);
     }
 
+    public function test_sync_full_resumes_from_persisted_mailbox_state(): void
+    {
+        Storage::fake('local');
+        $mk = fn (int $uid) => new ImapMessage(
+            uid: $uid, uidValidity: 1, mailbox: 'INBOX', messageId: "<$uid@x>", inReplyTo: null, references: [],
+            fromName: '', fromEmail: 'a@x', to: [], cc: [], date: Carbon::now(), subject: 'S', flags: [], labels: [],
+            textBody: 'b', htmlBody: null, rawHeaders: [], attachments: [],
+        );
+
+        $client = new class([$mk(1), $mk(2)]) implements ImapClientInterface
+        {
+            public ?int $lastSinceUid = null;
+
+            /** @param list<ImapMessage> $messages */
+            public function __construct(private array $messages) {}
+
+            public function listMailboxes(): array
+            {
+                return ['INBOX'];
+            }
+
+            public function selectMailbox(string $name): MailboxState
+            {
+                return new MailboxState(1, 2);
+            }
+
+            public function searchUids(string $mailbox, ?Carbon $since, ?int $sinceUid): array
+            {
+                $this->lastSinceUid = $sinceUid;
+
+                return array_values(array_map(
+                    static fn (ImapMessage $message) => $message->uid,
+                    array_filter(
+                        $this->messages,
+                        static fn (ImapMessage $message) => $sinceUid === null || $message->uid > $sinceUid,
+                    ),
+                ));
+            }
+
+            public function fetchMessage(string $mailbox, int $uid): ImapMessage
+            {
+                foreach ($this->messages as $message) {
+                    if ($message->uid === $uid) {
+                        return $message;
+                    }
+                }
+
+                throw new \RuntimeException("No fake message uid={$uid} in {$mailbox}");
+            }
+
+            public function ping(): bool
+            {
+                return true;
+            }
+
+            public function close(): void {}
+        };
+
+        $this->seedClient($client);
+        $inst = $this->installation();
+        $this->app->make(OAuthCredentialVault::class)->setExtraKey($inst->id, 'mailboxes_state', [
+            'INBOX' => ['uidvalidity' => 1, 'last_uid' => 1],
+        ]);
+
+        $result = $this->app->make(ImapConnector::class)->syncFull($inst->id);
+
+        $this->assertSame(1, $client->lastSinceUid);
+        $this->assertSame(1, $result->documentsAdded);
+        $this->assertCount(1, $this->spy->dispatches);
+        $this->assertSame('<2@x>', $this->spy->dispatches[0]['metadata']['message_id']);
+    }
+
     public function test_sync_full_uses_default_project_when_project_key_is_empty(): void
     {
         config()->set('kb.ingest.default_project', 'tenant-kb');
