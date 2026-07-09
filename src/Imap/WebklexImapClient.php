@@ -196,9 +196,21 @@ final class WebklexImapClient implements ImapClientInterface
 
     public function close(): void
     {
-        if ($this->connected) {
+        if (! $this->connected) {
+            return;
+        }
+
+        // Mark disconnected FIRST, then attempt the graceful LOGOUT. If the server
+        // already dropped the socket mid-sync (the classic Exchange Online "SSL:
+        // Broken pipe"), disconnect()/LOGOUT writes to a dead pipe and throws — we
+        // swallow it: close() must never throw from a caller's finally (masking the
+        // real error) nor leave the client wedged as "connected" so a fresh
+        // connect() can reopen it (reconnect-and-resume across folders / retries).
+        $this->connected = false;
+        try {
             $this->client->disconnect();
-            $this->connected = false;
+        } catch (\Throwable) {
+            // Connection already gone — nothing left to flush.
         }
     }
 

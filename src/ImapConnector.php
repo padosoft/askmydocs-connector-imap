@@ -504,10 +504,33 @@ class ImapConnector extends BaseConnector implements SupportsConnectionSettings,
             }
 
             foreach ($walker->selectedMailboxes() as $mailbox) {
-                $mailboxState = $full ? [] : (array) ($state[$mailbox] ?? []);
+                $mailboxState = (array) ($state[$mailbox] ?? []);
                 $window = $walker->windowSince();
                 $effectiveSince = $since !== null && $window !== null ? $since->max($window) : ($since ?? $window);
-                $r = $walker->incrementalUids($mailbox, $mailboxState, $effectiveSince);
+                try {
+                    $r = $walker->incrementalUids($mailbox, $mailboxState, $effectiveSince);
+                } catch (ConnectorAuthException $e) {
+                    // Auth failures must abort so the host prompts re-authentication.
+                    throw $e;
+                } catch (\Throwable $e) {
+                    // Only tolerate transport-level connection drops during folder scan.
+                    if ($e instanceof \Error) {
+                        throw $e;
+                    }
+
+                    $msg = $e->getMessage();
+                    $isTransportDrop = Str::contains($msg, ['broken pipe', 'connection reset', 'connection closed', 'eof'], ignoreCase: true);
+                    if (! $isTransportDrop) {
+                        throw $e;
+                    }
+
+                    $note = sprintf("folder '%s' scan interrupted (%s) — reconnecting for the next folder", $mailbox, $msg);
+                    $errors[] = $note;
+                    Log::warning('[connector-imap] '.$note, ['installation_id' => $installationId]);
+                    $client->close();
+
+                    continue;
+                }
                 $maxUid = (int) ($mailboxState['last_uid'] ?? 0);
 
                 foreach ($r['uids'] as $uid) {
@@ -567,10 +590,17 @@ class ImapConnector extends BaseConnector implements SupportsConnectionSettings,
         } catch (ConnectorPaginationLimitException) {
             $errors[] = sprintf('sync truncated at max_messages_per_sync=%d', $maxMessages);
         } finally {
-            $client->close();
+            // Persist progress on EVERY exit path — including a mid-sync throw — so the
+            // next run RESUMES from the last processed UID per folder instead of
+            // restarting the backfill. Exchange Online drops long IMAP sessions, and a
+            // lost cursor means a large mailbox could never finish. Saved BEFORE the
+            // close() so a close() hiccup can never skip the checkpoint.
+            try {
+                $this->vault->setExtraKey($installationId, 'mailboxes_state', $state);
+            } finally {
+                $client->close();
+            }
         }
-
-        $this->vault->setExtraKey($installationId, 'mailboxes_state', $state);
 
         return new SyncResult(
             documentsAdded: $full ? $added : 0,
