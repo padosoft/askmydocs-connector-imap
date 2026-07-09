@@ -6,6 +6,53 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This pr
 
 ---
 
+## [1.5.2] — 2026-07-09
+
+### Fixed
+
+- **The sync now survives Exchange Online dropping a long IMAP session
+  mid-run.** Exchange Online closes long-lived IMAP connections (throttling /
+  idle / session-lifetime limits); on a large first backfill the connection is
+  cut mid-sync and `webklex/php-imap`'s next write — a `NOOP` keepalive — hits a
+  dead socket: `fwrite(): SSL: Broken pipe`. Two flaws turned a routine drop
+  into an unrecoverable one:
+  - **Lost progress.** The per-folder UID cursor (`mailboxes_state`) was saved
+    only after a fully successful `runSync()`, on a statement placed *after* the
+    `try/finally`. A mid-sync throw skipped it, so every retry restarted the
+    backfill from the last fully-successful sync's cursor — a mailbox large
+    enough to drop before finishing could never complete (each retry re-did the
+    same work and dropped at the same point).
+  - **Whole-run abort + masked error.** A drop during a folder scan
+    (`incrementalUids` → `selectMailbox`/`searchUids`, outside the per-message
+    `try/catch`) aborted the entire run, and `WebklexImapClient::close()` could
+    itself throw on the broken socket (the `LOGOUT` write) — masking the real
+    error and leaving the client wedged as "connected".
+
+  Fixes:
+  - `mailboxes_state` is now persisted in the `finally` (before `close()`), so
+    progress is checkpointed on **every** exit path and retries/next runs
+    **resume** from the last processed UID instead of restarting the backfill.
+  - A transport drop during a folder scan is caught: it is recorded in the
+    `SyncResult` `errors[]`, the dead connection is dropped so the **next folder
+    reconnects fresh**, and the run continues — one interrupted folder no longer
+    fails the whole sync and resumes from its saved UID on the next run.
+  - `WebklexImapClient::close()` is now exception-safe: it marks the client
+    disconnected first and swallows a `LOGOUT`-on-broken-pipe failure, so
+    `close()` never throws from a caller's `finally` (masking the real error)
+    and a fresh `connect()` can always reopen the connection — the reconnect-and-
+    resume path across folders and job retries.
+
+  A new `ImapSyncTest` case locks the behaviour in: a folder whose scan throws a
+  `Broken pipe` is surfaced as a non-fatal error while the other folder is still
+  ingested and its UID cursor persisted.
+
+### Compatibility
+
+- Bug fix only — no API, config or schema changes, no new `connector-base`
+  version (`^1.4`). The behaviour change is strictly more resilient: a mid-sync
+  connection drop is now a recorded, resumable partial sync instead of an
+  aborted run with lost progress.
+
 ## [1.5.1] — 2026-07-08
 
 ### Fixed
@@ -35,6 +82,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This pr
   reach the operator and lets the sync job stop retrying a doomed connection.
   Two new `WebklexImapClientTest` cases lock the taxonomy in (auth-rejection
   response → auth, non-auth response → api).
+
+- **Non-ASCII IMAP folder names are decoded before folder lookup.**
+  `WebklexImapClient::listMailboxes()` returned `$folder->path` — the raw
+  modified UTF-7 name (RFC 3501, e.g. `Attivit&AOA-` for `Attività`) — but
+  `Client::getFolder()` expects UTF-8: `getFolderByName()` matches the decoded
+  `->name` and `getFolderByPath()` re-encodes UTF-8 → UTF7-IMAP itself, so the
+  already-encoded path double-encoded and the folder was never found. Every
+  mailbox with an accented/non-ASCII folder (typical on Exchange Online, e.g.
+  the Italian `Attività`) failed the sync with `Mailbox not found`, while
+  ASCII-only folders (Gmail `INBOX` / `[Gmail]/*`) worked. `listMailboxes()` now
+  returns `$folder->full_name`, so the name round-trips consistently through the
+  walker, `selectMailbox()`/`fetchMessage()` and the admin folder picker.
 
 ### Compatibility
 

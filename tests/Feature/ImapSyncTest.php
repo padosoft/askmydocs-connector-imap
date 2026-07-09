@@ -14,6 +14,7 @@ use Padosoft\AskMyDocsConnectorImap\Imap\ImapAttachment;
 use Padosoft\AskMyDocsConnectorImap\Imap\ImapClientFactoryInterface;
 use Padosoft\AskMyDocsConnectorImap\Imap\ImapClientInterface;
 use Padosoft\AskMyDocsConnectorImap\Imap\ImapMessage;
+use Padosoft\AskMyDocsConnectorImap\Imap\MailboxState;
 use Padosoft\AskMyDocsConnectorImap\ImapConnector;
 use Padosoft\AskMyDocsConnectorImap\Tests\Support\FakeImapClient;
 use Padosoft\AskMyDocsConnectorImap\Tests\Support\SpyIngestionContract;
@@ -203,5 +204,84 @@ final class ImapSyncTest extends TestCase
 
         $this->assertSame(1, $result->documentsAdded);
         $this->assertSame('tenant-kb', $this->spy->dispatches[0]['projectKey']);
+    }
+
+    public function test_transport_drop_on_one_folder_does_not_fail_whole_sync(): void
+    {
+        Storage::fake('local');
+        $msg = new ImapMessage(
+            uid: 3, uidValidity: 1, mailbox: 'INBOX', messageId: '<bp@x>', inReplyTo: null, references: [],
+            fromName: 'Mario', fromEmail: 'mario@acme.com', to: [], cc: [], date: Carbon::now(),
+            subject: 'survives the drop', flags: [], labels: [], textBody: 'body', htmlBody: null, rawHeaders: [], attachments: [],
+        );
+
+        // A client that drops the connection when the accented 'Attività' folder
+        // is scanned (Exchange Online cutting a long IMAP session — the next write
+        // hits a dead socket), but serves INBOX fine.
+        $client = new class(['INBOX' => [$msg]]) implements ImapClientInterface
+        {
+            public int $closes = 0;
+
+            /** @param array<string,list<ImapMessage>> $box */
+            public function __construct(private array $box) {}
+
+            public function listMailboxes(): array
+            {
+                return ['Attività', 'INBOX'];
+            }
+
+            public function selectMailbox(string $name): MailboxState
+            {
+                if ($name === 'Attività') {
+                    throw new \RuntimeException('fwrite(): SSL: Broken pipe');
+                }
+
+                return new MailboxState(1, 0);
+            }
+
+            public function searchUids(string $mailbox, ?Carbon $since, ?int $sinceUid): array
+            {
+                return array_map(static fn (ImapMessage $m) => $m->uid, $this->box[$mailbox] ?? []);
+            }
+
+            public function fetchMessage(string $mailbox, int $uid): ImapMessage
+            {
+                foreach ($this->box[$mailbox] ?? [] as $m) {
+                    if ($m->uid === $uid) {
+                        return $m;
+                    }
+                }
+                throw new \RuntimeException("no fake message uid={$uid}");
+            }
+
+            public function ping(): bool
+            {
+                return true;
+            }
+
+            public function close(): void
+            {
+                $this->closes++;
+            }
+        };
+
+        $this->seedClient($client);
+        $inst = $this->installation();
+
+        $result = $this->app->make(ImapConnector::class)->syncFull($inst->id);
+
+        // INBOX is still ingested despite the dropped 'Attività' folder...
+        $this->assertSame(1, $result->documentsAdded);
+        // ...the drop is surfaced as a NON-fatal error (run not aborted)...
+        $this->assertNotEmpty($result->errors);
+        $errors = implode("\n", $result->errors);
+        $this->assertStringContainsString('Attività', $errors);
+        $this->assertStringContainsString('Broken pipe', $errors);
+        // ...the dead connection was dropped so the next folder reconnects...
+        $this->assertGreaterThanOrEqual(1, $client->closes);
+        // ...and the good folder's UID cursor is checkpointed for the next run.
+        $state = $this->app->make(OAuthCredentialVault::class)->getExtra($inst->id);
+        $this->assertSame(3, $state['mailboxes_state']['INBOX']['last_uid']);
+        $this->assertArrayNotHasKey('Attività', $state['mailboxes_state']);
     }
 }
