@@ -35,7 +35,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This pr
   - A transport drop during a folder scan is caught: it is recorded in the
     `SyncResult` `errors[]`, the dead connection is dropped so the **next folder
     reconnects fresh**, and the run continues — one interrupted folder no longer
-    fails the whole sync and resumes from its saved UID on the next run.
+    fails the whole sync and resumes from its saved UID on the next run. The
+    tolerance is **transport-only** (post-review hardening): auth failures
+    (`ConnectorAuthException`) and PHP `Error`s are rethrown so a rejected
+    credential still aborts and re-prompts, and the drop classifier matches the
+    messages a cut session actually produces — the `LOGOUT`/`NOOP` write side
+    (`Broken pipe`) **and** the read side (`Empty response`, the real Exchange
+    Online mid-scan failure), plus reconnect/stream/SSL/timeout variants.
+  - **Full syncs now resume from the persisted per-folder UID cursor** instead
+    of forcing a from-scratch scan on every attempt. This is what actually ends
+    the "big first backfill can never finish" loop: a retried `syncFull()` used
+    to reset `mailboxState` to `[]`, re-walk the same UIDs and drop at the same
+    session-lifetime point every time.
   - `WebklexImapClient::close()` is now exception-safe: it marks the client
     disconnected first and swallows a `LOGOUT`-on-broken-pipe failure, so
     `close()` never throws from a caller's `finally` (masking the real error)
