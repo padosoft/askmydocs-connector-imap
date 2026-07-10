@@ -519,7 +519,28 @@ class ImapConnector extends BaseConnector implements SupportsConnectionSettings,
                     }
 
                     $msg = $e->getMessage();
-                    $isTransportDrop = Str::contains($msg, ['broken pipe', 'connection reset', 'connection closed', 'eof'], ignoreCase: true);
+                    // The needle set covers how a dropped session actually surfaces:
+                    // the LOGOUT/NOOP write on the dead socket ("fwrite(): SSL: Broken
+                    // pipe"), the read side of the same drop — webklex answers a
+                    // mid-command cut with ResponseException "Empty response" (the
+                    // real Exchange Online mid-scan failure) — and the reconnect
+                    // attempt failing while the server still throttles ("connection
+                    // setup failed" / stream errors / timeouts).
+                    $isTransportDrop = Str::contains($msg, [
+                        'broken pipe',
+                        'connection reset',
+                        'connection closed',
+                        'connection failed',
+                        'connection setup failed',
+                        'empty response',
+                        'no response',
+                        'not connected',
+                        'stream',
+                        'ssl',
+                        'timed out',
+                        'timeout',
+                        'eof',
+                    ], ignoreCase: true);
                     if (! $isTransportDrop) {
                         throw $e;
                     }
