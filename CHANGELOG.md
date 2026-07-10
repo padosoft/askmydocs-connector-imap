@@ -6,6 +6,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This pr
 
 ---
 
+## [1.5.3] — 2026-07-10
+
+### Fixed
+
+- **The transport-drop classifier now matches the READ side of a cut session —
+  `"Empty response"` — not only the write side.** 1.5.2's post-review narrowing
+  (rethrow auth failures and PHP `Error`s, tolerate only transport drops) keyed
+  the tolerance on message substrings that all describe the **write** side of a
+  dead socket (`broken pipe`, `connection reset/closed`, `eof`). But when
+  Exchange Online cuts the session **mid-`SEARCH`/`EXAMINE`**, webklex surfaces
+  the failure as `ResponseException` **"Empty response"** — the literal
+  production failure the 1.5.2 resilience work was built for (the famous
+  `fwrite(): SSL: Broken pipe` only fires later, when `close()`'s `LOGOUT`
+  writes to the already-dead socket, masking it). Result: on 1.5.2 the real
+  mid-scan drop was rethrown and still aborted the whole run — progress was
+  checkpointed and resumed (so retries advanced), but every drop burned a job
+  retry and a large backfill could still flap the installation to `errored`.
+
+  The needle set now covers both sides of a drop and the reconnect attempt:
+  `empty response`, `no response`, `not connected`, `stream`, `ssl`,
+  `timed out` / `timeout`, `connection failed` / `connection setup failed`,
+  alongside the existing write-side needles. Two regression tests lock the
+  taxonomy in: the exact production message is tolerated (run continues, UID
+  cursor checkpointed) and a `ConnectorAuthException` mid-scan still aborts so
+  the host re-prompts.
+
+### Compatibility
+
+- Bug fix only — no API, config or schema changes, no new `connector-base`
+  version (`^1.4`).
+
 ## [1.5.2] — 2026-07-09
 
 ### Fixed
@@ -35,7 +66,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This pr
   - A transport drop during a folder scan is caught: it is recorded in the
     `SyncResult` `errors[]`, the dead connection is dropped so the **next folder
     reconnects fresh**, and the run continues — one interrupted folder no longer
-    fails the whole sync and resumes from its saved UID on the next run.
+    fails the whole sync and resumes from its saved UID on the next run. The
+    tolerance is **transport-only** (post-review hardening): auth failures
+    (`ConnectorAuthException`) and PHP `Error`s are rethrown so a rejected
+    credential still aborts and re-prompts. (Note: on this version the drop
+    needles only match the write side — `broken pipe` & co.; the read-side
+    `"Empty response"` is covered by 1.5.3.)
+  - **Full syncs resume from the persisted per-folder UID cursor** instead of
+    forcing a from-scratch scan on every attempt: a retried `syncFull()` used to
+    reset `mailboxState` to `[]`, re-walk the same UIDs and drop at the same
+    session-lifetime point every time.
   - `WebklexImapClient::close()` is now exception-safe: it marks the client
     disconnected first and swallows a `LOGOUT`-on-broken-pipe failure, so
     `close()` never throws from a caller's `finally` (masking the real error)
