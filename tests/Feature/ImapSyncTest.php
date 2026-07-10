@@ -9,6 +9,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Storage;
 use Padosoft\AskMyDocsConnectorBase\Auth\OAuthCredentialVault;
 use Padosoft\AskMyDocsConnectorBase\Contracts\ConnectorIngestionContract;
+use Padosoft\AskMyDocsConnectorBase\Exceptions\ConnectorAuthException;
 use Padosoft\AskMyDocsConnectorBase\Models\ConnectorInstallation;
 use Padosoft\AskMyDocsConnectorImap\Imap\ImapAttachment;
 use Padosoft\AskMyDocsConnectorImap\Imap\ImapClientFactoryInterface;
@@ -246,7 +247,7 @@ final class ImapSyncTest extends TestCase
         $this->assertSame(1, $client->lastSinceUid);
         $this->assertSame(1, $result->documentsAdded);
         $this->assertCount(1, $this->spy->dispatches);
-        $this->assertSame('<2@x>', $this->spy->dispatches[0]['metadata']['message_id']);
+        $this->assertSame('<2@x>', $this->spy->dispatches[0]['metadata']['imap_message_id']);
     }
 
     public function test_sync_full_uses_default_project_when_project_key_is_empty(): void
@@ -276,6 +277,111 @@ final class ImapSyncTest extends TestCase
 
         $this->assertSame(1, $result->documentsAdded);
         $this->assertSame('tenant-kb', $this->spy->dispatches[0]['projectKey']);
+    }
+
+    /**
+     * A client whose scan of one folder throws $scanError while the other
+     * folder ('INBOX') serves $messages normally — the shape of Exchange Online
+     * cutting a long IMAP session mid-scan.
+     *
+     * @param  list<ImapMessage>  $messages
+     */
+    private function clientWithFailingFolder(string $failingFolder, \Throwable $scanError, array $messages): ImapClientInterface
+    {
+        return new class($failingFolder, $scanError, ['INBOX' => $messages]) implements ImapClientInterface
+        {
+            public int $closes = 0;
+
+            /** @param array<string,list<ImapMessage>> $box */
+            public function __construct(
+                private string $failingFolder,
+                private \Throwable $scanError,
+                private array $box,
+            ) {}
+
+            public function listMailboxes(): array
+            {
+                return [$this->failingFolder, 'INBOX'];
+            }
+
+            public function selectMailbox(string $name): MailboxState
+            {
+                if ($name === $this->failingFolder) {
+                    throw $this->scanError;
+                }
+
+                return new MailboxState(1, 0);
+            }
+
+            public function searchUids(string $mailbox, ?Carbon $since, ?int $sinceUid): array
+            {
+                return array_map(static fn (ImapMessage $m) => $m->uid, $this->box[$mailbox] ?? []);
+            }
+
+            public function fetchMessage(string $mailbox, int $uid): ImapMessage
+            {
+                foreach ($this->box[$mailbox] ?? [] as $m) {
+                    if ($m->uid === $uid) {
+                        return $m;
+                    }
+                }
+                throw new \RuntimeException("no fake message uid={$uid}");
+            }
+
+            public function ping(): bool
+            {
+                return true;
+            }
+
+            public function close(): void
+            {
+                $this->closes++;
+            }
+        };
+    }
+
+    public function test_empty_response_drop_is_tolerated_as_transport_drop(): void
+    {
+        Storage::fake('local');
+        $msg = new ImapMessage(
+            uid: 4, uidValidity: 1, mailbox: 'INBOX', messageId: '<er@x>', inReplyTo: null, references: [],
+            fromName: 'Mario', fromEmail: 'mario@acme.com', to: [], cc: [], date: Carbon::now(),
+            subject: 'still ingested', flags: [], labels: [], textBody: 'body', htmlBody: null, rawHeaders: [], attachments: [],
+        );
+
+        // The literal Exchange Online mid-scan failure: webklex answers a session
+        // cut during SEARCH/EXAMINE with a ResponseException whose message is
+        // "Empty response" — NOT "broken pipe" (that one only fires later, when
+        // close()'s LOGOUT writes to the dead socket). The transport-drop
+        // classifier must tolerate it or the whole run aborts again.
+        $client = $this->clientWithFailingFolder('Attività', new \RuntimeException(
+            "Command failed to process:\nCauses:\n\t- Empty response\nError occurred"
+        ), [$msg]);
+
+        $this->seedClient($client);
+        $inst = $this->installation();
+
+        $result = $this->app->make(ImapConnector::class)->syncFull($inst->id);
+
+        $this->assertSame(1, $result->documentsAdded);
+        $this->assertNotEmpty($result->errors);
+        $this->assertStringContainsString('Empty response', implode("\n", $result->errors));
+        $state = $this->app->make(OAuthCredentialVault::class)->getExtra($inst->id);
+        $this->assertSame(4, $state['mailboxes_state']['INBOX']['last_uid']);
+    }
+
+    public function test_auth_failure_during_folder_scan_aborts_the_run(): void
+    {
+        Storage::fake('local');
+        // A rejected credential mid-scan must NOT be downgraded to a per-folder
+        // warning: the run aborts so the host prompts re-authentication.
+        $client = $this->clientWithFailingFolder('Attività', new ConnectorAuthException('IMAP authentication failed'), []);
+
+        $this->seedClient($client);
+        $inst = $this->installation();
+
+        $this->expectException(ConnectorAuthException::class);
+        $this->app->make(ImapConnector::class)->syncFull($inst->id);
     }
 
     public function test_transport_drop_on_one_folder_does_not_fail_whole_sync(): void
