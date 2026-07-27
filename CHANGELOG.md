@@ -27,6 +27,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This pr
   reverse-ordered UID tokens and asserts that neither `get()` nor
   `setFetchBody()` is called.
 
+- **Message-body fetching now uses the interoperable `BODY[TEXT]` form.**
+  Webklex defaults to `RFC822.TEXT`, but Stalwart returns the complete RFC822
+  entity for that request. The connector therefore rendered the original
+  headers inside the email body and generated-fixture content verification
+  rejected every message. Configuring the Webklex client with `rfc => BODY`
+  returns only the MIME body, which Webklex then decodes, and also follows
+  Webklex's documented compatibility path for servers such as iCloud. A
+  factory regression test locks the body-only fetch mode.
+
 ### Compatibility
 
 - No API, config or schema changes. The minimum `webklex/php-imap` version is
