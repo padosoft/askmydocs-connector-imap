@@ -6,6 +6,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This pr
 
 ---
 
+## [1.5.4] — 2026-07-27
+
+### Fixed
+
+- **Large-mailbox UID discovery no longer materializes every message's flags
+  and RFC822 headers.** `WebklexImapClient::searchUids()` used
+  `Query::get()`, which performs the required IMAP `SEARCH` and then follows it
+  with `FETCH` commands for the flags and headers of every matching UID. That
+  metadata was immediately discarded and fetched again later by
+  `fetchMessage()`. Besides wasting bandwidth, memory and server work on Gmail
+  and Exchange, a 5,000-message folder produced a 23 KB UID command that
+  Stalwart rejected because it exceeded its 8 KB argument limit; webklex
+  surfaced the rejection as `"Empty response"` and the folder discovered
+  nothing.
+
+  UID discovery now uses `Query::search()` directly in explicit UID sequence
+  mode, then preserves the existing integer normalization, incremental-cursor
+  filter and ascending ordering. A regression test exercises 5,000
+  reverse-ordered UID tokens and asserts that neither `get()` nor
+  `setFetchBody()` is called.
+
+### Compatibility
+
+- No API, config or schema changes. The minimum `webklex/php-imap` version is
+  now 6.2 because `Query::search()` became public in that release; the package
+  lock already used 6.2.0. No new `connector-base` version is required. The
+  optimization applies to every IMAP provider supported by the package.
+
 ## [1.5.3] — 2026-07-10
 
 ### Fixed
