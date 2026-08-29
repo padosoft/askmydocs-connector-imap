@@ -14,6 +14,7 @@ use Illuminate\Support\Str;
 use Padosoft\AskMyDocsConnectorBase\Auth\OAuthCredentialVault;
 use Padosoft\AskMyDocsConnectorBase\BaseConnector;
 use Padosoft\AskMyDocsConnectorBase\Contracts\ConnectorIngestionContract;
+use Padosoft\AskMyDocsConnectorBase\Contracts\DeclaresProvenance;
 use Padosoft\AskMyDocsConnectorBase\Contracts\SupportsConnectionSettings;
 use Padosoft\AskMyDocsConnectorBase\Contracts\SupportsCredentialForm;
 use Padosoft\AskMyDocsConnectorBase\Contracts\SupportsFolderDiscovery;
@@ -22,6 +23,7 @@ use Padosoft\AskMyDocsConnectorBase\Exceptions\ConnectorAuthException;
 use Padosoft\AskMyDocsConnectorBase\Exceptions\ConnectorPaginationLimitException;
 use Padosoft\AskMyDocsConnectorBase\HealthStatus;
 use Padosoft\AskMyDocsConnectorBase\Models\ConnectorInstallation;
+use Padosoft\AskMyDocsConnectorBase\ProvenanceTier;
 use Padosoft\AskMyDocsConnectorBase\Support\CredentialField;
 use Padosoft\AskMyDocsConnectorBase\Support\TenantContext;
 use Padosoft\AskMyDocsConnectorBase\SyncResult;
@@ -34,7 +36,7 @@ use Padosoft\AskMyDocsConnectorImap\Imap\MailboxWalker;
 use Padosoft\AskMyDocsConnectorImap\Imap\MessageFilter;
 use Padosoft\AskMyDocsConnectorImap\Support\MailMetadata;
 
-class ImapConnector extends BaseConnector implements SupportsConnectionSettings, SupportsCredentialForm, SupportsFolderDiscovery
+class ImapConnector extends BaseConnector implements DeclaresProvenance, SupportsConnectionSettings, SupportsCredentialForm, SupportsFolderDiscovery
 {
     /**
      * Microsoft 365 app-only (OAuth2 client-credentials) auth mode. Unlike the
@@ -441,6 +443,36 @@ class ImapConnector extends BaseConnector implements SupportsConnectionSettings,
         }
 
         $this->vault->clearCredentials($installationId);
+    }
+
+    /**
+     * Mail is the one source in the connector family whose authors are not
+     * chosen by the organisation.
+     *
+     * Every other connector reads a system the organisation administers, so
+     * its content was written by someone who was granted the ability to write
+     * it. A mailbox accepts a message from anyone who knows the address.
+     * Delivery proves nothing about authority: not the sender's identity, not
+     * their relationship to the organisation, not that they were invited to
+     * contribute at all.
+     *
+     * That text becomes a document, the document becomes chunks, and the
+     * chunks are retrieved as grounding on a platform that also exposes tools
+     * an agent can call. Labelling it is what later lets the host treat it as
+     * quotable but not as instruction.
+     *
+     * The tier is fixed rather than derived from configuration. A folder
+     * allow-list narrows WHICH mail is ingested, never who was able to send
+     * it; an operator syncing only an internal-looking folder still has a
+     * mailbox anyone can post to. Deriving "internal" from such a setting
+     * would hand an operator a way to silently mark external mail trusted,
+     * which is the shape of mistake this label exists to prevent. An
+     * organisation that genuinely ingests a closed internal list should say so
+     * through a deliberate host-side decision, not through a sync filter.
+     */
+    public function provenanceTier(int $installationId): ProvenanceTier
+    {
+        return ProvenanceTier::UntrustedExternal;
     }
 
     public function health(int $installationId): HealthStatus
