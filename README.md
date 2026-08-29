@@ -424,6 +424,10 @@ The package supports two integration modes for credential collection. Choose the
 
 > **Folder discovery + full settings editor (connector-base ^1.4+):** `ImapConnector` also implements `SupportsFolderDiscovery` and `SupportsConnectionSettings`. `listAvailableFolders()` returns the live mailbox/label paths (basic AND xoauth2, with token refresh) so the host can offer a **folder picker** for `folders.include` / `folders.exclude`. `connectionSettingsSchema()` declares the **entire editable sync surface** — sync window, folder include/exclude, sender/recipient/subject filters, body format, attachment limits, scope flags — as a generic schema the host renders as a post-install settings editor. Every value lands in `config_json` at its dotted path, exactly what the sync engine reads back.
 
+> **Provenance declaration (connector-base ^1.5+):** `ImapConnector` implements `DeclaresProvenance` and returns `ProvenanceTier::UntrustedExternal`. Every other connector reads a system the organisation administers, so its content was written by someone granted the ability to write it. A mailbox accepts a message from **anyone who knows the address**, and delivery proves nothing about the sender's authority — yet that text becomes a document, then chunks, then retrieval grounding on a platform that also exposes tools an agent can call. The host records the tier per document so it can later treat such content as quotable but never as instruction.
+>
+> The tier is **fixed, not derived from configuration**. A folder allow-list narrows *which* mail is ingested, never *who* was able to send it; an operator syncing only an internal-looking folder still has a mailbox anyone can post to. Deriving "internal" from a sync filter would hand an operator a way to silently mark external mail trusted — the exact mistake the label exists to prevent.
+
 ---
 
 ### Mode A: Use the package's optional HTTP layer (recommended for most hosts)
