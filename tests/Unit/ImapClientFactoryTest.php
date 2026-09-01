@@ -31,8 +31,9 @@ final class ImapClientFactoryTest extends TestCase
             'basic',
         );
 
-        $property = new ReflectionProperty($client, 'client');
-        $webklexClient = $property->getValue($client);
+$property = new ReflectionProperty($client, 'client');
+$property->setAccessible(true);
+$webklexClient = $property->getValue($client);
 
         $this->assertInstanceOf(Client::class, $webklexClient);
         $this->assertSame('BODY', $webklexClient->rfc);
