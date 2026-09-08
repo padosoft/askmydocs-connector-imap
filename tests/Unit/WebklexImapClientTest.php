@@ -13,6 +13,9 @@ use Webklex\PHPIMAP\Client;
 use Webklex\PHPIMAP\Exceptions\AuthFailedException;
 use Webklex\PHPIMAP\Exceptions\ConnectionFailedException;
 use Webklex\PHPIMAP\Exceptions\ResponseException;
+use Webklex\PHPIMAP\Folder;
+use Webklex\PHPIMAP\IMAP;
+use Webklex\PHPIMAP\Query\WhereQuery;
 
 /**
  * The connect() failure taxonomy: a rejected login is an AUTH failure (host
@@ -22,6 +25,30 @@ use Webklex\PHPIMAP\Exceptions\ResponseException;
  */
 final class WebklexImapClientTest extends TestCase
 {
+    public function test_search_uids_uses_uid_only_search_without_fetching_message_metadata(): void
+    {
+        $since = now()->subDays(365);
+        $query = Mockery::mock(WhereQuery::class);
+        $query->shouldReceive('setSequence')->once()->with(IMAP::ST_UID)->andReturnSelf();
+        $query->shouldReceive('since')->once()->with($since)->andReturnSelf();
+        $query->shouldReceive('search')
+            ->once()
+            ->andReturn(collect(array_map('strval', array_reverse(range(1, 5000)))));
+        $query->shouldNotReceive('setFetchBody');
+        $query->shouldNotReceive('get');
+
+        $folder = Mockery::mock(Folder::class);
+        $folder->shouldReceive('query')->once()->andReturn($query);
+
+        $client = Mockery::mock(Client::class);
+        $client->shouldReceive('connect')->once();
+        $client->shouldReceive('getFolder')->once()->with('INBOX')->andReturn($folder);
+
+        $uids = (new WebklexImapClient($client))->searchUids('INBOX', $since, 4990);
+
+        $this->assertSame(range(4991, 5000), $uids);
+    }
+
     public function test_rejected_login_surfaces_as_connector_auth_exception(): void
     {
         $client = Mockery::mock(Client::class);

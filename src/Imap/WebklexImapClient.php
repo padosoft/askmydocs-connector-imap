@@ -14,6 +14,7 @@ use Webklex\PHPIMAP\Attribute;
 use Webklex\PHPIMAP\Client;
 use Webklex\PHPIMAP\Exceptions\AuthFailedException;
 use Webklex\PHPIMAP\Exceptions\ResponseException;
+use Webklex\PHPIMAP\IMAP;
 use Webklex\PHPIMAP\Message;
 
 final class WebklexImapClient implements ImapClientInterface
@@ -99,17 +100,21 @@ final class WebklexImapClient implements ImapClientInterface
         if ($folder === null) {
             throw new ConnectorApiException("Mailbox not found: {$mailbox}");
         }
-        $query = $folder->query();
+        $query = $folder->query()->setSequence(IMAP::ST_UID);
         if ($since !== null) {
             $query = $query->since($since);
         } else {
             $query = $query->all();
         }
 
+        // searchUids() only needs identifiers. Query::get() would follow SEARCH
+        // with FLAGS + RFC822 header FETCH commands for every match, only for us
+        // to discard that metadata here and fetch each selected message again
+        // later. Besides the redundant network/memory cost, a large UID list can
+        // exceed an IMAP server's command-length limit.
         $uids = [];
-        foreach ($query->setFetchBody(false)->get() as $message) {
-            /** @var Message $message */
-            $uid = (int) $message->getUid();
+        foreach ($query->search() as $uid) {
+            $uid = (int) $uid;
             if ($sinceUid !== null && $uid <= $sinceUid) {
                 continue;
             }

@@ -18,6 +18,10 @@ final class ImapClientFactory implements ImapClientFactoryInterface
             'validate_cert' => (bool) ($connection['validate_cert'] ?? true),
             'username' => (string) ($connection['username'] ?? ''),
             'password' => $secret,
+            // BODY[TEXT] is the interoperable body-only fetch form. Stalwart
+            // returns the complete RFC822 entity for RFC822.TEXT, which makes
+            // message headers appear inside the rendered email body.
+            'rfc' => 'BODY',
             // webklex uses 'oauth' string for XOAuth2; null means basic LOGIN.
             // Both the delegated ('xoauth2') and the Microsoft 365 app-only
             // ('xoauth2_client_credentials') modes authenticate via SASL XOAUTH2
